@@ -194,6 +194,27 @@ func (c *compiler) compileStatement(statement parser.Statement) (Statement, erro
 			Step:  step,
 			Body:  body,
 		}, nil
+	case *parser.GenericForStatement:
+		names := make([]string, 0, len(node.Names))
+		for _, name := range node.Names {
+			names = append(names, name.Name)
+		}
+
+		iterators, err := c.compileExpressions(node.Iterators)
+		if err != nil {
+			return nil, err
+		}
+
+		body, err := c.compileStatements(node.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		return &GenericForStatement{
+			Names:     names,
+			Iterators: iterators,
+			Body:      body,
+		}, nil
 	case *parser.ReturnStatement:
 		values, err := c.compileExpressions(node.Values)
 		if err != nil {

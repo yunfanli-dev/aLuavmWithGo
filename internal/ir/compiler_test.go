@@ -180,3 +180,32 @@ return total
 		t.Fatalf("expected third IR statement to be numeric for, got %T", program.Statements[2])
 	}
 }
+
+func TestCompileChunkBuildsGenericForIR(t *testing.T) {
+	chunk, err := parser.ParseString("generic_for.lua", `
+for key, value in pairs({ answer = 42 }) do
+	return key, value
+end
+`)
+	if err != nil {
+		t.Fatalf("parse chunk: %v", err)
+	}
+
+	program, err := CompileChunk(chunk)
+	if err != nil {
+		t.Fatalf("compile chunk: %v", err)
+	}
+
+	loop, ok := program.Statements[0].(*GenericForStatement)
+	if !ok {
+		t.Fatalf("expected first IR statement to be generic for, got %T", program.Statements[0])
+	}
+
+	if len(loop.Names) != 2 || loop.Names[0] != "key" || loop.Names[1] != "value" {
+		t.Fatalf("unexpected generic for IR names: %#v", loop.Names)
+	}
+
+	if len(loop.Iterators) != 1 {
+		t.Fatalf("expected 1 iterator expression, got %d", len(loop.Iterators))
+	}
+}

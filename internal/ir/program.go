@@ -86,6 +86,13 @@ type NumericForStatement struct {
 	Body  []Statement
 }
 
+// GenericForStatement represents an IR generic for-in loop.
+type GenericForStatement struct {
+	Names     []string
+	Iterators []Expression
+	Body      []Statement
+}
+
 // ReturnStatement represents an IR return statement.
 type ReturnStatement struct {
 	Values []Expression
@@ -166,6 +173,7 @@ func (*IfStatement) node()                            {}
 func (*WhileStatement) node()                         {}
 func (*RepeatStatement) node()                        {}
 func (*NumericForStatement) node()                    {}
+func (*GenericForStatement) node()                    {}
 func (*ReturnStatement) node()                        {}
 func (*IdentifierExpression) node()                   {}
 func (*CallExpression) node()                         {}
@@ -187,6 +195,7 @@ func (*IfStatement) statement()                       {}
 func (*WhileStatement) statement()                    {}
 func (*RepeatStatement) statement()                   {}
 func (*NumericForStatement) statement()               {}
+func (*GenericForStatement) statement()               {}
 func (*ReturnStatement) statement()                   {}
 func (*IdentifierExpression) expression()             {}
 func (*CallExpression) expression()                   {}

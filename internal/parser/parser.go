@@ -97,7 +97,7 @@ func (p *Parser) parseStatement() (Statement, error) {
 	case lexer.TokenReturn:
 		return p.parseReturnStatement()
 	default:
-		// TODO: Extend statement parsing with remaining Lua 5.1 subset forms like generic for loops.
+		// TODO: Extend statement parsing with remaining Lua 5.1 subset forms like repeatable block statements.
 		return nil, p.errorAtCurrent(fmt.Sprintf("unsupported statement starting with %q", p.current().Type))
 	}
 }
@@ -409,7 +409,7 @@ func (p *Parser) parseRepeatStatement() (Statement, error) {
 	}, nil
 }
 
-// parseForStatement parses the numeric for-loop form in the current Lua 5.1 subset.
+// parseForStatement parses the numeric and generic for-loop forms in the current Lua 5.1 subset.
 func (p *Parser) parseForStatement() (Statement, error) {
 	startToken, err := p.expect(lexer.TokenFor, "expected 'for'")
 	if err != nil {
@@ -421,10 +421,56 @@ func (p *Parser) parseForStatement() (Statement, error) {
 		return nil, err
 	}
 
-	if _, err := p.expect(lexer.TokenAssign, "expected '=' after for-loop variable"); err != nil {
+	if p.match(lexer.TokenAssign) {
+		return p.finishNumericForStatement(startToken, nameToken)
+	}
+
+	names := []Identifier{{Name: nameToken.Literal, span: tokenSpan(nameToken)}}
+	for p.match(lexer.TokenComma) {
+		nextName, err := p.expect(lexer.TokenIdentifier, "expected generic for-loop variable name after ','")
+		if err != nil {
+			return nil, err
+		}
+
+		names = append(names, Identifier{Name: nextName.Literal, span: tokenSpan(nextName)})
+	}
+
+	if _, err := p.expect(lexer.TokenIn, "expected 'in' after generic for-loop variables"); err != nil {
 		return nil, err
 	}
 
+	iterators, err := p.parseExpressionList()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(lexer.TokenDo, "expected 'do' after generic for-loop iterators"); err != nil {
+		return nil, err
+	}
+
+	body, _, err := p.parseBlock(lexer.TokenEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	endToken, err := p.expect(lexer.TokenEnd, "expected 'end' after for loop")
+	if err != nil {
+		return nil, err
+	}
+
+	return &GenericForStatement{
+		Names:     names,
+		Iterators: iterators,
+		Body:      body,
+		span: Span{
+			Start: startToken.Start,
+			End:   endToken.End,
+		},
+	}, nil
+}
+
+// finishNumericForStatement parses the numeric `for name = start, limit[, step] do ... end` form.
+func (p *Parser) finishNumericForStatement(startToken lexer.Token, nameToken lexer.Token) (Statement, error) {
 	startExpr, err := p.parseExpression()
 	if err != nil {
 		return nil, err

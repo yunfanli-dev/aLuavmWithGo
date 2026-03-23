@@ -106,6 +106,14 @@ type NumericForStatement struct {
 	span  Span
 }
 
+// GenericForStatement represents a Lua generic for-in loop.
+type GenericForStatement struct {
+	Names     []Identifier
+	Iterators []Expression
+	Body      []Statement
+	span      Span
+}
+
 // ReturnStatement represents a Lua `return` statement.
 type ReturnStatement struct {
 	Values []Expression
@@ -200,6 +208,7 @@ func (*IfStatement) node()                       {}
 func (*WhileStatement) node()                    {}
 func (*RepeatStatement) node()                   {}
 func (*NumericForStatement) node()               {}
+func (*GenericForStatement) node()               {}
 func (*ReturnStatement) node()                   {}
 func (*Identifier) node()                        {}
 func (*CallExpression) node()                    {}
@@ -222,6 +231,7 @@ func (*IfStatement) statement()                       {}
 func (*WhileStatement) statement()                    {}
 func (*RepeatStatement) statement()                   {}
 func (*NumericForStatement) statement()               {}
+func (*GenericForStatement) statement()               {}
 func (*ReturnStatement) statement()                   {}
 
 func (*Identifier) expression()                 {}
@@ -268,6 +278,9 @@ func (s *RepeatStatement) Span() Span { return s.span }
 
 // Span reports the source range for a numeric for statement.
 func (s *NumericForStatement) Span() Span { return s.span }
+
+// Span reports the source range for a generic for statement.
+func (s *GenericForStatement) Span() Span { return s.span }
 
 // Span reports the source range for a return statement.
 func (s *ReturnStatement) Span() Span { return s.span }

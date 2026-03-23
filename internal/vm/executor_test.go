@@ -170,6 +170,76 @@ return total
 	}
 }
 
+func TestExecStringEvaluatesGenericForWithPairs(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local result = ""
+for key, value in pairs({ answer = 42 }) do
+	result = key .. ":" .. tostring(value)
+end
+return result
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "answer:42" {
+		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesGenericForWithIPairs(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local total = 0
+for _, value in ipairs({ [1] = 3, [2] = 4, [3] = 5 }) do
+	total = total + value
+end
+return total
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(12) {
+		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinNext(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local key, value = next({ answer = 42 })
+return key, value
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "answer" {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
 func TestExecStringHonorsBlockLocalScope(t *testing.T) {
 	state := NewState()
 

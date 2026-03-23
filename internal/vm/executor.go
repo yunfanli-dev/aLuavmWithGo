@@ -107,6 +107,8 @@ func (e *executor) executeStatement(statement ir.Statement) (*executionResult, b
 		return e.executeRepeatStatement(node)
 	case *ir.NumericForStatement:
 		return e.executeNumericForStatement(node)
+	case *ir.GenericForStatement:
+		return e.executeGenericForStatement(node)
 	case *ir.ReturnStatement:
 		values, err := e.evaluateExpressionList(node.Values)
 		if err != nil {
@@ -240,6 +242,60 @@ func (e *executor) executeNumericForStatement(statement *ir.NumericForStatement)
 	}
 
 	return nil, false, nil
+}
+
+// executeGenericForStatement evaluates the current generic for-loop subset using iterator, state, and control values.
+func (e *executor) executeGenericForStatement(statement *ir.GenericForStatement) (*executionResult, bool, error) {
+	iteratorValues, err := e.evaluateExpressionList(statement.Iterators)
+	if err != nil {
+		return nil, false, err
+	}
+
+	iterator := NilValue()
+	stateValue := NilValue()
+	controlValue := NilValue()
+	if len(iteratorValues) > 0 {
+		iterator = iteratorValues[0]
+	}
+	if len(iteratorValues) > 1 {
+		stateValue = iteratorValues[1]
+	}
+	if len(iteratorValues) > 2 {
+		controlValue = iteratorValues[2]
+	}
+
+	for {
+		returnValues, err := e.callFunctionValue(iterator, []Value{stateValue, controlValue})
+		if err != nil {
+			return nil, false, err
+		}
+
+		if len(returnValues) == 0 || returnValues[0].Type == ValueTypeNil {
+			return nil, false, nil
+		}
+
+		controlValue = returnValues[0]
+
+		e.pushScope()
+		for index, name := range statement.Names {
+			value := NilValue()
+			if index < len(returnValues) {
+				value = returnValues[index]
+			}
+
+			e.defineLocal(name, value)
+		}
+
+		result, done, err := e.executeBlock(statement.Body)
+		e.popScope()
+		if err != nil {
+			return nil, false, err
+		}
+
+		if done {
+			return result, true, nil
+		}
+	}
 }
 
 func (e *executor) executeBlock(statements []ir.Statement) (*executionResult, bool, error) {

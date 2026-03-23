@@ -82,7 +82,7 @@ func TestParseMultipleLocalNamesAndValues(t *testing.T) {
 }
 
 func TestParseReturnsHelpfulErrorForUnsupportedStatement(t *testing.T) {
-	_, err := ParseString("generic_for.lua", "for k, v in t do return k end")
+	_, err := ParseString("unsupported.lua", "do return 1 end")
 	if err == nil {
 		t.Fatal("expected parser error")
 	}
@@ -92,8 +92,8 @@ func TestParseReturnsHelpfulErrorForUnsupportedStatement(t *testing.T) {
 		t.Fatalf("expected parser error type, got %T", err)
 	}
 
-	if parseErr.Token.Type != "," {
-		t.Fatalf("expected failing token to be ',', got %q", parseErr.Token.Type)
+	if parseErr.Token.Type != "do" {
+		t.Fatalf("expected failing token to be 'do', got %q", parseErr.Token.Type)
 	}
 }
 
@@ -223,5 +223,29 @@ return total
 
 	if _, ok := chunk.Statements[2].(*NumericForStatement); !ok {
 		t.Fatalf("expected third statement to be numeric for, got %T", chunk.Statements[2])
+	}
+}
+
+func TestParseGenericFor(t *testing.T) {
+	chunk, err := ParseString("generic_for.lua", `
+for key, value in pairs({ answer = 42 }) do
+	return key, value
+end
+`)
+	if err != nil {
+		t.Fatalf("parse generic for: %v", err)
+	}
+
+	loop, ok := chunk.Statements[0].(*GenericForStatement)
+	if !ok {
+		t.Fatalf("expected first statement to be generic for, got %T", chunk.Statements[0])
+	}
+
+	if len(loop.Names) != 2 || loop.Names[0].Name != "key" || loop.Names[1].Name != "value" {
+		t.Fatalf("unexpected generic for names: %+v", loop.Names)
+	}
+
+	if len(loop.Iterators) != 1 {
+		t.Fatalf("expected 1 iterator expression, got %d", len(loop.Iterators))
 	}
 }
