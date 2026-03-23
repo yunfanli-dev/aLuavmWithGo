@@ -9,6 +9,7 @@ import (
 
 func (s *State) registerBuiltins() {
 	s.registerBuiltinPrint()
+	s.registerBuiltinClockMillis()
 	s.registerBuiltinType()
 	s.registerBuiltinToString()
 	s.registerBuiltinToNumber()

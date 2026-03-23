@@ -5,6 +5,7 @@ import (
 	"io"
 	"math/rand"
 	"strings"
+	"time"
 )
 
 // State owns the bootstrap VM runtime objects for a single Lua execution context.
@@ -146,5 +147,16 @@ func (s *State) registerBuiltinPrint() {
 		}
 
 		return nil, nil
+	})
+}
+
+// registerBuiltinClockMillis installs a minimal wall-clock helper for manual timing scripts.
+func (s *State) registerBuiltinClockMillis() {
+	_ = s.RegisterFunction("clock_ms", func(args []Value) ([]Value, error) {
+		if len(args) != 0 {
+			return nil, fmt.Errorf("clock_ms expects no arguments")
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: float64(time.Now().UnixNano()) / 1e6}}, nil
 	})
 }

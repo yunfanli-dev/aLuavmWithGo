@@ -216,6 +216,42 @@ return a, b, c, math.random(), math.random(5), math.random(3, 7)
 	}
 }
 
+func TestExecStringEvaluatesClockMillis(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local start = clock_ms()
+local sum = 0
+for i = 1, 10 do
+	sum = sum + i
+end
+local finish = clock_ms()
+return start, finish, finish >= start, sum
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	for _, index := range []int{0, 1} {
+		value := returnValues[index]
+		if value.Type != ValueTypeNumber {
+			t.Fatalf("unexpected clock_ms return value at %d: %#v", index, value)
+		}
+	}
+
+	if returnValues[2].Type != ValueTypeBoolean || returnValues[2].Data != true {
+		t.Fatalf("unexpected clock comparison value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNumber || returnValues[3].Data != float64(55) {
+		t.Fatalf("unexpected loop sum value: %#v", returnValues[3])
+	}
+}
+
 func TestExecStringEvaluatesStringLibrary(t *testing.T) {
 	state := NewState()
 
