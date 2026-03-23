@@ -31,9 +31,9 @@
 
 ## 执行安全空白
 
-- 当前 VM 没有 step limit、instruction budget 或 context cancellation
-  说明：`go test` 只能从测试框架层面兜底超时，CLI 和宿主执行入口仍缺少真正的脚本级中断能力。
-  影响：无限循环脚本理论上仍可能长期占用执行线程。
+- 当前 VM 已有最小 `step limit` 和 `context cancellation`，但仍没有更严格的 instruction budget
+  说明：宿主现在可以配置基础执行预算，也可以主动取消执行，但预算精度和 CLI 级控制仍有继续收口空间。
+  影响：执行安全能力已具备前两阶段最小保护，但仍未达到更严格、更细粒度的预算模型。
   参考：[ExecutionSafetyPlan.md](./ExecutionSafetyPlan.md)
 
 ## 验证与整理空白

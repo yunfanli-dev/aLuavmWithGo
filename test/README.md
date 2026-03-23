@@ -11,6 +11,9 @@
 - 结合 [RegressionChecklist.md](./RegressionChecklist.md) 对照关键能力点做回归检查。
 - 结合 [GapChecklist.md](./GapChecklist.md) 查看当前剩余空白，判断后续应优先补能力还是补验证。
 - 如果需要评估脚本死循环和宿主中断问题，先看 [ExecutionSafetyPlan.md](./ExecutionSafetyPlan.md)。
+- 如果需要验证执行预算保护，可在 Go 侧配置 `SetStepLimit(...)` 后运行循环脚本或死循环脚本测试。
+- 如果需要验证宿主主动取消，可使用 `ExecStringWithContext` / `ExecSourceWithContext` / `ExecFileWithContext` 配合已取消 `context.Context` 做回归。
+- `SetStepLimit(...)` 默认未开启；只有显式设置正数预算时才会生效，`limit <= 0` 会按不限制处理。
 
 ## 当前覆盖范围
 
@@ -51,6 +54,7 @@
 - 当前 lexer 已支持基础关键字、标识符、十进制、指数形式和十六进制数字、短字符串、long bracket 字符串与注释、短注释和常用运算符；更完整的 Lua 词法细节仍待补齐。
 - 当前 parser 已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数声明、方法定义、table 构造、匿名函数、普通调用、方法调用以及 `fn{...}` / `fn"..."` 这类调用语法糖，并会拒绝非法作用域中的 `...`；更多 Lua 5.1 语法仍待补齐。
 - 当前已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数调用、方法调用、table / string 调用语法糖、table 读写、闭包基础能力和基础一元/二元表达式的执行；完整多返回值语义和更多 Lua 5.1 细节仍待补齐。
+- 当前已支持最小执行步数限制 `SetStepLimit(...)`，也已支持基于 `context.Context` 的宿主主动取消；更严格的 instruction budget 仍未实现。
 - 当前已支持 Go 宿主向 Lua 注册基础函数，并内置最小 `print`；标准库仍远未完整。
 - 当前已内置 `print`、`clock_ms`、`type`、`tostring`、`tonumber`、`select`、`unpack`、`assert`、`error`、`pcall`、`xpcall`、`next`、`pairs`、`ipairs`、`rawequal`，以及最小 `table.insert` / `table.remove` / `table.concat` / `table.sort`、`math.abs` / `math.floor` / `math.ceil` / `math.max` / `math.min` / `math.sqrt` / `math.pow` / `math.random` / `math.randomseed` / `math.log` / `math.exp` / `math.sin` / `math.cos` 和 `string.len` / `string.sub` / `string.lower` / `string.upper` / `string.rep` / `string.reverse` / `string.byte` / `string.char`；这仍只是较小的基础内建子集。
 - 当前已支持 `error`、`pcall`、基础 `vararg`，并支持最后一个函数调用或 `...` 在返回列表中的多返回值展开、table 构造器最后一个数组字段的展开，以及圆括号抑制展开的单值语义；更完整的 Lua 多返回值规则仍未全部覆盖。

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,5 +118,40 @@ func TestBuiltinPrintWritesToConfiguredOutput(t *testing.T) {
 
 	if output.String() != "hello\t42\n" {
 		t.Fatalf("unexpected print output %q", output.String())
+	}
+}
+
+func TestSetStepLimitStopsInfiniteLoop(t *testing.T) {
+	vm := NewVM()
+	vm.SetStepLimit(20)
+
+	err := vm.ExecString(`
+while true do
+end
+`)
+	if err == nil {
+		t.Fatal("expected step limit error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": execution step limit exceeded` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringWithContextStopsCanceledScript(t *testing.T) {
+	vm := NewVM()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := vm.ExecStringWithContext(ctx, `
+while true do
+end
+`)
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+
+	if err != context.Canceled {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

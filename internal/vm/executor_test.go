@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -121,6 +122,57 @@ func TestExecStringEvaluatesBooleanLogic(t *testing.T) {
 
 	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringRespectsStepLimit(t *testing.T) {
+	state := NewState()
+	state.SetStepLimit(100)
+
+	if err := state.ExecString(`
+local sum = 0
+for i = 1, 5 do
+	sum = sum + i
+end
+return sum
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 || returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(15) {
+		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
+func TestExecStringStepLimitStopsInfiniteLoop(t *testing.T) {
+	state := NewState()
+	state.SetStepLimit(20)
+
+	err := state.ExecString(`
+while true do
+end
+`)
+	if err == nil {
+		t.Fatal("expected step limit error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": execution step limit exceeded` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringWithContextStopsCanceledScript(t *testing.T) {
+	state := NewState()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := state.ExecStringWithContext(ctx, `
+while true do
+end
+`)
+	if err != context.Canceled {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

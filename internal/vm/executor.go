@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -15,21 +16,30 @@ type executionResult struct {
 }
 
 type executor struct {
-	scopes  []map[string]*valueCell
-	varargs []Value
+	scopes         []map[string]*valueCell
+	varargs        []Value
+	stepLimit      int
+	remainingSteps int
+	ctx            context.Context
 }
 
 // executeProgram evaluates the current IR subset and returns any explicit return values.
-func executeProgram(state *State, program *ir.Program) (*executionResult, error) {
+func executeProgram(ctx context.Context, state *State, program *ir.Program) (*executionResult, error) {
 	if program == nil {
 		return nil, fmt.Errorf("execute nil IR program")
 	}
 	if state == nil {
 		return nil, fmt.Errorf("execute nil VM state")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	exec := &executor{
-		scopes: []map[string]*valueCell{state.globals},
+		scopes:         []map[string]*valueCell{state.globals},
+		stepLimit:      state.stepLimit,
+		remainingSteps: state.stepLimit,
+		ctx:            ctx,
 	}
 
 	for _, statement := range program.Statements {
@@ -51,6 +61,10 @@ func executeProgram(state *State, program *ir.Program) (*executionResult, error)
 }
 
 func (e *executor) executeStatement(statement ir.Statement) (*executionResult, bool, error) {
+	if err := e.consumeStep(); err != nil {
+		return nil, false, err
+	}
+
 	switch node := statement.(type) {
 	case *ir.CallStatement:
 		_, err := e.evaluateCallExpression(node.Call)
@@ -378,6 +392,10 @@ func (e *executor) evaluateExpressionValues(expression ir.Expression, expandCall
 }
 
 func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
+	if err := e.consumeStep(); err != nil {
+		return NilValue(), err
+	}
+
 	switch node := expression.(type) {
 	case *ir.IdentifierExpression:
 		value, ok := e.lookup(node.Name)
@@ -483,6 +501,26 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 	default:
 		return NilValue(), fmt.Errorf("evaluate unsupported IR expression %T", expression)
 	}
+}
+
+// consumeStep decrements the current script budget when step limiting is enabled.
+func (e *executor) consumeStep() error {
+	if e.ctx != nil {
+		if err := e.ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	if e.stepLimit <= 0 {
+		return nil
+	}
+
+	if e.remainingSteps <= 0 {
+		return fmt.Errorf("execution step limit exceeded")
+	}
+
+	e.remainingSteps--
+	return nil
 }
 
 func (e *executor) makeUserFunctionValue(name string, parameters []string, isVararg bool, body []ir.Statement) Value {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 
 	"github.com/yunfanli-dev/aLuavmWithGo/internal/vm"
@@ -20,12 +21,22 @@ func NewVM() *VM {
 
 // ExecString executes a Lua source string through the current bootstrap pipeline.
 func (v *VM) ExecString(source string) error {
-	return v.ExecSource(NewStringSource("<memory>", source))
+	return v.ExecStringWithContext(context.Background(), source)
+}
+
+// ExecStringWithContext executes a Lua source string with host cancellation support.
+func (v *VM) ExecStringWithContext(ctx context.Context, source string) error {
+	return v.ExecSourceWithContext(ctx, NewStringSource("<memory>", source))
 }
 
 // ExecSource executes a loaded Lua source payload through the current bootstrap pipeline.
 func (v *VM) ExecSource(source Source) error {
-	return v.state.ExecSource(vm.Source{
+	return v.ExecSourceWithContext(context.Background(), source)
+}
+
+// ExecSourceWithContext executes a loaded Lua source payload with host cancellation support.
+func (v *VM) ExecSourceWithContext(ctx context.Context, source Source) error {
+	return v.state.ExecSourceWithContext(ctx, vm.Source{
 		Name:    source.Name,
 		Content: source.Content,
 	})
@@ -33,12 +44,17 @@ func (v *VM) ExecSource(source Source) error {
 
 // ExecFile loads a Lua file from disk and sends it through the current bootstrap pipeline.
 func (v *VM) ExecFile(path string) error {
+	return v.ExecFileWithContext(context.Background(), path)
+}
+
+// ExecFileWithContext loads a Lua file from disk and executes it with host cancellation support.
+func (v *VM) ExecFileWithContext(ctx context.Context, path string) error {
 	source, err := NewFileSource(path)
 	if err != nil {
 		return err
 	}
 
-	return v.ExecSource(source)
+	return v.ExecSourceWithContext(ctx, source)
 }
 
 // RegisterFunction exposes a Go host function to the Lua global environment.
@@ -51,4 +67,9 @@ func (v *VM) RegisterFunction(name string, fn func(args []Value) ([]Value, error
 // SetOutput changes the writer used by builtin output functions like print.
 func (v *VM) SetOutput(writer io.Writer) {
 	v.state.SetOutput(writer)
+}
+
+// SetStepLimit configures the maximum number of execution steps for one script run.
+func (v *VM) SetStepLimit(limit int) {
+	v.state.SetStepLimit(limit)
 }

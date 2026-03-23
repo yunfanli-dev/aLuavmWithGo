@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math/rand"
@@ -14,6 +15,7 @@ type State struct {
 	globals      map[string]*valueCell
 	output       io.Writer
 	random       *rand.Rand
+	stepLimit    int
 	lastProgram  *FrontendResult
 	lastReturned []Value
 }
@@ -33,7 +35,12 @@ func NewState() *State {
 
 // ExecString is the temporary execution entry for Lua source strings.
 func (s *State) ExecString(source string) error {
-	return s.ExecSource(Source{
+	return s.ExecStringWithContext(context.Background(), source)
+}
+
+// ExecStringWithContext executes a Lua source string with host cancellation support.
+func (s *State) ExecStringWithContext(ctx context.Context, source string) error {
+	return s.ExecSourceWithContext(ctx, Source{
 		Name:    "<memory>",
 		Content: source,
 	})
@@ -41,9 +48,22 @@ func (s *State) ExecString(source string) error {
 
 // ExecSource is the temporary execution entry for loaded Lua source payloads.
 func (s *State) ExecSource(source Source) error {
+	return s.ExecSourceWithContext(context.Background(), source)
+}
+
+// ExecSourceWithContext executes a loaded Lua source payload with host cancellation support.
+func (s *State) ExecSourceWithContext(ctx context.Context, source Source) error {
 	trimmed := strings.TrimSpace(source.Content)
 	if trimmed == "" {
 		return nil
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	sourceName := source.Name
@@ -62,7 +82,7 @@ func (s *State) ExecSource(source Source) error {
 	s.lastProgram = frontendResult
 	s.lastReturned = nil
 
-	result, err := executeProgram(s, frontendResult.Program)
+	result, err := executeProgram(ctx, s, frontendResult.Program)
 	if err != nil {
 		return fmt.Errorf("execute compiled Lua source %q: %w", sourceName, err)
 	}
@@ -94,6 +114,11 @@ func (s *State) SetOutput(writer io.Writer) {
 	}
 
 	s.output = writer
+}
+
+// SetStepLimit configures the maximum number of execution steps for one script run.
+func (s *State) SetStepLimit(limit int) {
+	s.stepLimit = limit
 }
 
 // RegisterFunction exposes a Go host function to the Lua global environment.
