@@ -9,7 +9,7 @@ import (
 // State owns the bootstrap VM runtime objects for a single Lua execution context.
 type State struct {
 	stack        *Stack
-	globals      map[string]Value
+	globals      map[string]*valueCell
 	output       io.Writer
 	lastProgram  *FrontendResult
 	lastReturned []Value
@@ -19,11 +19,11 @@ type State struct {
 func NewState() *State {
 	state := &State{
 		stack:   NewStack(),
-		globals: make(map[string]Value),
+		globals: make(map[string]*valueCell),
 		output:  io.Discard,
 	}
 
-	state.registerBuiltinPrint()
+	state.registerBuiltins()
 	return state
 }
 
@@ -94,19 +94,32 @@ func (s *State) SetOutput(writer io.Writer) {
 
 // RegisterFunction exposes a Go host function to the Lua global environment.
 func (s *State) RegisterFunction(name string, fn NativeFunction) error {
+	return s.registerNativeFunction(name, &nativeFunction{
+		name: name,
+		fn:   fn,
+	})
+}
+
+func (s *State) registerContextualFunction(name string, fn contextualNativeFunction) error {
+	return s.registerNativeFunction(name, &nativeFunction{
+		name:           name,
+		contextualImpl: fn,
+	})
+}
+
+func (s *State) registerNativeFunction(name string, function *nativeFunction) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("register function with empty name")
 	}
 
-	if fn == nil {
+	if function == nil || (function.fn == nil && function.contextualImpl == nil) {
 		return fmt.Errorf("register function %q with nil handler", name)
 	}
 
-	s.globals[name] = Value{
-		Type: ValueTypeFunction,
-		Data: &nativeFunction{
-			name: name,
-			fn:   fn,
+	s.globals[name] = &valueCell{
+		value: Value{
+			Type: ValueTypeFunction,
+			Data: function,
 		},
 	}
 

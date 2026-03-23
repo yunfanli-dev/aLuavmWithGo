@@ -40,13 +40,21 @@ type CallStatement struct {
 
 // AssignStatement represents `name = expr` and `a, b = ...`.
 type AssignStatement struct {
-	Names  []Identifier
-	Values []Expression
-	span   Span
+	Targets []Expression
+	Values  []Expression
+	span    Span
 }
 
 // FunctionDeclarationStatement represents `function name(args) ... end`.
 type FunctionDeclarationStatement struct {
+	Name       Identifier
+	Parameters []Identifier
+	Body       []Statement
+	span       Span
+}
+
+// LocalFunctionDeclarationStatement represents `local function name(args) ... end`.
+type LocalFunctionDeclarationStatement struct {
 	Name       Identifier
 	Parameters []Identifier
 	Body       []Statement
@@ -81,6 +89,23 @@ type WhileStatement struct {
 	span      Span
 }
 
+// RepeatStatement represents a Lua `repeat ... until` loop.
+type RepeatStatement struct {
+	Body      []Statement
+	Condition Expression
+	span      Span
+}
+
+// NumericForStatement represents a Lua numeric for-loop.
+type NumericForStatement struct {
+	Name  Identifier
+	Start Expression
+	Limit Expression
+	Step  Expression
+	Body  []Statement
+	span  Span
+}
+
 // ReturnStatement represents a Lua `return` statement.
 type ReturnStatement struct {
 	Values []Expression
@@ -98,6 +123,33 @@ type CallExpression struct {
 	Callee    Expression
 	Arguments []Expression
 	span      Span
+}
+
+// FunctionExpression represents `function(args) ... end`.
+type FunctionExpression struct {
+	Parameters []Identifier
+	Body       []Statement
+	span       Span
+}
+
+// IndexExpression represents `target[index]` and `target.name`.
+type IndexExpression struct {
+	Target Expression
+	Index  Expression
+	span   Span
+}
+
+// TableField represents one field inside a table constructor.
+type TableField struct {
+	Key   Expression
+	Value Expression
+	span  Span
+}
+
+// TableConstructorExpression represents `{ ... }`.
+type TableConstructorExpression struct {
+	Fields []TableField
+	span   Span
 }
 
 // NilExpression represents the Lua `nil` literal.
@@ -138,39 +190,51 @@ type BinaryExpression struct {
 	span     Span
 }
 
-func (*Chunk) node()                        {}
-func (*CallStatement) node()                {}
-func (*AssignStatement) node()              {}
-func (*FunctionDeclarationStatement) node() {}
-func (*LocalAssignStatement) node()         {}
-func (*IfStatement) node()                  {}
-func (*WhileStatement) node()               {}
-func (*ReturnStatement) node()              {}
-func (*Identifier) node()                   {}
-func (*CallExpression) node()               {}
-func (*NilExpression) node()                {}
-func (*BooleanExpression) node()            {}
-func (*NumberExpression) node()             {}
-func (*StringExpression) node()             {}
-func (*UnaryExpression) node()              {}
-func (*BinaryExpression) node()             {}
+func (*Chunk) node()                             {}
+func (*CallStatement) node()                     {}
+func (*AssignStatement) node()                   {}
+func (*FunctionDeclarationStatement) node()      {}
+func (*LocalFunctionDeclarationStatement) node() {}
+func (*LocalAssignStatement) node()              {}
+func (*IfStatement) node()                       {}
+func (*WhileStatement) node()                    {}
+func (*RepeatStatement) node()                   {}
+func (*NumericForStatement) node()               {}
+func (*ReturnStatement) node()                   {}
+func (*Identifier) node()                        {}
+func (*CallExpression) node()                    {}
+func (*FunctionExpression) node()                {}
+func (*IndexExpression) node()                   {}
+func (*TableConstructorExpression) node()        {}
+func (*NilExpression) node()                     {}
+func (*BooleanExpression) node()                 {}
+func (*NumberExpression) node()                  {}
+func (*StringExpression) node()                  {}
+func (*UnaryExpression) node()                   {}
+func (*BinaryExpression) node()                  {}
 
-func (*CallStatement) statement()                {}
-func (*AssignStatement) statement()              {}
-func (*FunctionDeclarationStatement) statement() {}
-func (*LocalAssignStatement) statement()         {}
-func (*IfStatement) statement()                  {}
-func (*WhileStatement) statement()               {}
-func (*ReturnStatement) statement()              {}
+func (*CallStatement) statement()                     {}
+func (*AssignStatement) statement()                   {}
+func (*FunctionDeclarationStatement) statement()      {}
+func (*LocalFunctionDeclarationStatement) statement() {}
+func (*LocalAssignStatement) statement()              {}
+func (*IfStatement) statement()                       {}
+func (*WhileStatement) statement()                    {}
+func (*RepeatStatement) statement()                   {}
+func (*NumericForStatement) statement()               {}
+func (*ReturnStatement) statement()                   {}
 
-func (*Identifier) expression()        {}
-func (*CallExpression) expression()    {}
-func (*NilExpression) expression()     {}
-func (*BooleanExpression) expression() {}
-func (*NumberExpression) expression()  {}
-func (*StringExpression) expression()  {}
-func (*UnaryExpression) expression()   {}
-func (*BinaryExpression) expression()  {}
+func (*Identifier) expression()                 {}
+func (*CallExpression) expression()             {}
+func (*FunctionExpression) expression()         {}
+func (*IndexExpression) expression()            {}
+func (*TableConstructorExpression) expression() {}
+func (*NilExpression) expression()              {}
+func (*BooleanExpression) expression()          {}
+func (*NumberExpression) expression()           {}
+func (*StringExpression) expression()           {}
+func (*UnaryExpression) expression()            {}
+func (*BinaryExpression) expression()           {}
 
 // Span reports the source range for a chunk node.
 func (c *Chunk) Span() Span { return c.span }
@@ -184,6 +248,9 @@ func (s *AssignStatement) Span() Span { return s.span }
 // Span reports the source range for a function declaration statement.
 func (s *FunctionDeclarationStatement) Span() Span { return s.span }
 
+// Span reports the source range for a local function declaration statement.
+func (s *LocalFunctionDeclarationStatement) Span() Span { return s.span }
+
 // Span reports the source range for a local assignment statement.
 func (s *LocalAssignStatement) Span() Span { return s.span }
 
@@ -196,6 +263,12 @@ func (s *IfStatement) Span() Span { return s.span }
 // Span reports the source range for a while statement.
 func (s *WhileStatement) Span() Span { return s.span }
 
+// Span reports the source range for a repeat statement.
+func (s *RepeatStatement) Span() Span { return s.span }
+
+// Span reports the source range for a numeric for statement.
+func (s *NumericForStatement) Span() Span { return s.span }
+
 // Span reports the source range for a return statement.
 func (s *ReturnStatement) Span() Span { return s.span }
 
@@ -204,6 +277,18 @@ func (e *Identifier) Span() Span { return e.span }
 
 // Span reports the source range for a call expression.
 func (e *CallExpression) Span() Span { return e.span }
+
+// Span reports the source range for a function expression.
+func (e *FunctionExpression) Span() Span { return e.span }
+
+// Span reports the source range for an index expression.
+func (e *IndexExpression) Span() Span { return e.span }
+
+// Span reports the source range for a table field.
+func (f *TableField) Span() Span { return f.span }
+
+// Span reports the source range for a table constructor expression.
+func (e *TableConstructorExpression) Span() Span { return e.span }
 
 // Span reports the source range for a nil expression.
 func (e *NilExpression) Span() Span { return e.span }

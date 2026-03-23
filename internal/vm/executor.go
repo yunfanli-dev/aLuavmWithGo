@@ -13,7 +13,7 @@ type executionResult struct {
 }
 
 type executor struct {
-	scopes []map[string]Value
+	scopes []map[string]*valueCell
 }
 
 // executeProgram evaluates the current IR subset and returns any explicit return values.
@@ -26,7 +26,7 @@ func executeProgram(state *State, program *ir.Program) (*executionResult, error)
 	}
 
 	exec := &executor{
-		scopes: []map[string]Value{state.globals},
+		scopes: []map[string]*valueCell{state.globals},
 	}
 
 	for _, statement := range program.Statements {
@@ -54,13 +54,15 @@ func (e *executor) executeStatement(statement ir.Statement) (*executionResult, b
 			return nil, false, err
 		}
 
-		for index, name := range node.Names {
+		for index, target := range node.Targets {
 			value := NilValue()
 			if index < len(values) {
 				value = values[index]
 			}
 
-			e.assign(name, value)
+			if err := e.assignTarget(target, value); err != nil {
+				return nil, false, err
+			}
 		}
 
 		return nil, false, nil
@@ -81,20 +83,30 @@ func (e *executor) executeStatement(statement ir.Statement) (*executionResult, b
 
 		return nil, false, nil
 	case *ir.FunctionDeclarationStatement:
-		e.assign(node.Name, Value{
-			Type: ValueTypeFunction,
-			Data: &userFunction{
-				name:       node.Name,
-				parameters: append([]string(nil), node.Parameters...),
-				body:       append([]ir.Statement(nil), node.Body...),
-			},
-		})
+		e.assign(node.Name, e.makeUserFunctionValue(node.Name, node.Parameters, node.Body))
+
+		return nil, false, nil
+	case *ir.LocalFunctionDeclarationStatement:
+		placeholder := NilValue()
+		e.defineLocal(node.Name, placeholder)
+		functionValue := e.makeUserFunctionValue(node.Name, node.Parameters, node.Body)
+		e.assign(node.Name, functionValue)
+
+		if userFn, ok := functionValue.Data.(*userFunction); ok {
+			if cell, ok := e.currentScope()[node.Name]; ok {
+				userFn.captured[node.Name] = cell
+			}
+		}
 
 		return nil, false, nil
 	case *ir.IfStatement:
 		return e.executeIfStatement(node)
 	case *ir.WhileStatement:
 		return e.executeWhileStatement(node)
+	case *ir.RepeatStatement:
+		return e.executeRepeatStatement(node)
+	case *ir.NumericForStatement:
+		return e.executeNumericForStatement(node)
 	case *ir.ReturnStatement:
 		values, err := e.evaluateExpressionList(node.Values)
 		if err != nil {
@@ -144,6 +156,92 @@ func (e *executor) executeWhileStatement(statement *ir.WhileStatement) (*executi
 	}
 }
 
+// executeRepeatStatement runs a repeat-until loop and evaluates the until condition in the loop body's scope.
+func (e *executor) executeRepeatStatement(statement *ir.RepeatStatement) (*executionResult, bool, error) {
+	for {
+		e.pushScope()
+		for _, child := range statement.Body {
+			result, done, err := e.executeStatement(child)
+			if err != nil {
+				e.popScope()
+				return nil, false, err
+			}
+
+			if done {
+				e.popScope()
+				return result, true, nil
+			}
+		}
+
+		condition, err := e.evaluateExpression(statement.Condition)
+		e.popScope()
+		if err != nil {
+			return nil, false, err
+		}
+
+		if isTruthy(condition) {
+			return nil, false, nil
+		}
+	}
+}
+
+// executeNumericForStatement evaluates the current numeric for-loop subset with start, limit, and step expressions.
+func (e *executor) executeNumericForStatement(statement *ir.NumericForStatement) (*executionResult, bool, error) {
+	startValue, err := e.evaluateExpression(statement.Start)
+	if err != nil {
+		return nil, false, err
+	}
+
+	limitValue, err := e.evaluateExpression(statement.Limit)
+	if err != nil {
+		return nil, false, err
+	}
+
+	stepValue, err := e.evaluateExpression(statement.Step)
+	if err != nil {
+		return nil, false, err
+	}
+
+	current, err := requireNumber(startValue, "for")
+	if err != nil {
+		return nil, false, err
+	}
+
+	limit, err := requireNumber(limitValue, "for")
+	if err != nil {
+		return nil, false, err
+	}
+
+	step, err := requireNumber(stepValue, "for")
+	if err != nil {
+		return nil, false, err
+	}
+
+	if step == 0 {
+		return nil, false, fmt.Errorf("numeric for step cannot be zero")
+	}
+
+	e.pushScope()
+	defer e.popScope()
+	e.defineLocal(statement.Name, Value{Type: ValueTypeNumber, Data: current})
+
+	for numericForContinues(current, limit, step) {
+		e.assign(statement.Name, Value{Type: ValueTypeNumber, Data: current})
+		result, done, err := e.executeBlock(statement.Body)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if done {
+			return result, true, nil
+		}
+
+		current += step
+	}
+
+	return nil, false, nil
+}
+
 func (e *executor) executeBlock(statements []ir.Statement) (*executionResult, bool, error) {
 	e.pushScope()
 	defer e.popScope()
@@ -164,16 +262,31 @@ func (e *executor) executeBlock(statements []ir.Statement) (*executionResult, bo
 
 func (e *executor) evaluateExpressionList(expressions []ir.Expression) ([]Value, error) {
 	values := make([]Value, 0, len(expressions))
-	for _, expression := range expressions {
-		value, err := e.evaluateExpression(expression)
+	for index, expression := range expressions {
+		expanded, err := e.evaluateExpressionValues(expression, index == len(expressions)-1)
 		if err != nil {
 			return nil, err
 		}
 
-		values = append(values, value)
+		values = append(values, expanded...)
 	}
 
 	return values, nil
+}
+
+func (e *executor) evaluateExpressionValues(expression ir.Expression, expandCall bool) ([]Value, error) {
+	if expandCall {
+		if call, ok := expression.(*ir.CallExpression); ok {
+			return e.evaluateCallExpressionValues(call)
+		}
+	}
+
+	value, err := e.evaluateExpression(expression)
+	if err != nil {
+		return nil, err
+	}
+
+	return []Value{value}, nil
 }
 
 func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
@@ -200,6 +313,57 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 		return Value{Type: ValueTypeString, Data: node.Value}, nil
 	case *ir.CallExpression:
 		return e.evaluateCallExpression(node)
+	case *ir.IndexExpression:
+		target, err := e.evaluateExpression(node.Target)
+		if err != nil {
+			return NilValue(), err
+		}
+
+		if target.Type != ValueTypeTable {
+			return NilValue(), fmt.Errorf("attempt to index non-table value of type %s", target.Type)
+		}
+
+		index, err := e.evaluateExpression(node.Index)
+		if err != nil {
+			return NilValue(), err
+		}
+
+		tableValue, ok := target.Data.(*table)
+		if !ok {
+			return NilValue(), fmt.Errorf("invalid table payload %T", target.Data)
+		}
+
+		value, exists, err := tableValue.get(index)
+		if err != nil {
+			return NilValue(), err
+		}
+
+		if !exists {
+			return NilValue(), nil
+		}
+
+		return value, nil
+	case *ir.TableConstructorExpression:
+		tableValue := newTable()
+		for _, field := range node.Fields {
+			key, err := e.evaluateExpression(field.Key)
+			if err != nil {
+				return NilValue(), err
+			}
+
+			value, err := e.evaluateExpression(field.Value)
+			if err != nil {
+				return NilValue(), err
+			}
+
+			if err := tableValue.set(key, value); err != nil {
+				return NilValue(), err
+			}
+		}
+
+		return Value{Type: ValueTypeTable, Data: tableValue}, nil
+	case *ir.FunctionExpression:
+		return e.makeUserFunctionValue("", node.Parameters, node.Body), nil
 	case *ir.UnaryExpression:
 		return e.evaluateUnaryExpression(node)
 	case *ir.BinaryExpression:
@@ -209,19 +373,96 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 	}
 }
 
+func (e *executor) makeUserFunctionValue(name string, parameters []string, body []ir.Statement) Value {
+	return Value{
+		Type: ValueTypeFunction,
+		Data: &userFunction{
+			name:       name,
+			parameters: append([]string(nil), parameters...),
+			body:       append([]ir.Statement(nil), body...),
+			captured:   e.snapshotVisibleCells(),
+		},
+	}
+}
+
+func (e *executor) assignTarget(target ir.Expression, value Value) error {
+	switch node := target.(type) {
+	case *ir.IdentifierExpression:
+		e.assign(node.Name, value)
+		return nil
+	case *ir.IndexExpression:
+		targetValue, err := e.evaluateExpression(node.Target)
+		if err != nil {
+			return err
+		}
+
+		if targetValue.Type != ValueTypeTable {
+			return fmt.Errorf("attempt to index-assign non-table value of type %s", targetValue.Type)
+		}
+
+		index, err := e.evaluateExpression(node.Index)
+		if err != nil {
+			return err
+		}
+
+		tableValue, ok := targetValue.Data.(*table)
+		if !ok {
+			return fmt.Errorf("invalid table payload %T", targetValue.Data)
+		}
+
+		return tableValue.set(index, value)
+	default:
+		return fmt.Errorf("unsupported assignment target %T", target)
+	}
+}
+
 func (e *executor) evaluateCallExpression(expression *ir.CallExpression) (Value, error) {
-	callee, err := e.evaluateExpression(expression.Callee)
+	values, err := e.evaluateCallExpressionValues(expression)
 	if err != nil {
 		return NilValue(), err
+	}
+
+	if len(values) == 0 {
+		return NilValue(), nil
+	}
+
+	return values[0], nil
+}
+
+func (e *executor) evaluateCallExpressionValues(expression *ir.CallExpression) ([]Value, error) {
+	callee, err := e.evaluateExpression(expression.Callee)
+	if err != nil {
+		return nil, err
 	}
 
 	arguments, err := e.evaluateExpressionList(expression.Arguments)
 	if err != nil {
-		return NilValue(), err
+		return nil, err
 	}
 
+	return e.callFunctionValue(callee, arguments)
+}
+
+func (e *executor) pushScope() {
+	e.scopes = append(e.scopes, map[string]*valueCell{})
+}
+
+func (e *executor) currentScope() map[string]*valueCell {
+	return e.scopes[len(e.scopes)-1]
+}
+
+func (e *executor) popScope() {
+	if len(e.scopes) <= 1 {
+		e.scopes[0] = map[string]*valueCell{}
+		return
+	}
+
+	e.scopes = e.scopes[:len(e.scopes)-1]
+}
+
+func (e *executor) callFunctionValue(callee Value, arguments []Value) ([]Value, error) {
 	if callee.Type != ValueTypeFunction {
-		return NilValue(), fmt.Errorf("attempt to call non-function value of type %s", callee.Type)
+		return nil, fmt.Errorf("attempt to call non-function value of type %s", callee.Type)
 	}
 
 	switch functionValue := callee.Data.(type) {
@@ -230,31 +471,19 @@ func (e *executor) evaluateCallExpression(expression *ir.CallExpression) (Value,
 	case *nativeFunction:
 		return e.callNativeFunction(functionValue, arguments)
 	default:
-		return NilValue(), fmt.Errorf("invalid function payload %T", callee.Data)
+		return nil, fmt.Errorf("invalid function payload %T", callee.Data)
 	}
 }
 
-func (e *executor) pushScope() {
-	e.scopes = append(e.scopes, map[string]Value{})
-}
-
-func (e *executor) popScope() {
-	if len(e.scopes) <= 1 {
-		e.scopes[0] = map[string]Value{}
-		return
-	}
-
-	e.scopes = e.scopes[:len(e.scopes)-1]
-}
-
-func (e *executor) callUserFunction(functionValue *userFunction, arguments []Value) (Value, error) {
+func (e *executor) callUserFunction(functionValue *userFunction, arguments []Value) ([]Value, error) {
 	if functionValue == nil {
-		return NilValue(), fmt.Errorf("call nil function")
+		return nil, fmt.Errorf("call nil function")
 	}
 
 	savedScopes := e.scopes
 	globalScope := savedScopes[0]
-	e.scopes = []map[string]Value{globalScope, {}}
+	capturedScope := copyCellMap(functionValue.captured)
+	e.scopes = []map[string]*valueCell{globalScope, capturedScope, {}}
 	defer func() {
 		e.scopes = savedScopes
 	}()
@@ -271,62 +500,77 @@ func (e *executor) callUserFunction(functionValue *userFunction, arguments []Val
 	for _, statement := range functionValue.body {
 		result, done, err := e.executeStatement(statement)
 		if err != nil {
-			return NilValue(), err
+			return nil, err
 		}
 
 		if done {
-			if len(result.returnValues) == 0 {
-				return NilValue(), nil
-			}
-
-			return result.returnValues[0], nil
+			return append([]Value(nil), result.returnValues...), nil
 		}
 	}
 
-	return NilValue(), nil
+	return nil, nil
 }
 
-func (e *executor) callNativeFunction(functionValue *nativeFunction, arguments []Value) (Value, error) {
-	if functionValue == nil || functionValue.fn == nil {
-		return NilValue(), fmt.Errorf("call nil native function")
+func (e *executor) callNativeFunction(functionValue *nativeFunction, arguments []Value) ([]Value, error) {
+	if functionValue == nil || (functionValue.fn == nil && functionValue.contextualImpl == nil) {
+		return nil, fmt.Errorf("call nil native function")
 	}
 
-	returnValues, err := functionValue.fn(arguments)
-	if err != nil {
-		return NilValue(), err
+	if functionValue.contextualImpl != nil {
+		return functionValue.contextualImpl(e, arguments)
 	}
 
-	if len(returnValues) == 0 {
-		return NilValue(), nil
-	}
-
-	return returnValues[0], nil
+	return functionValue.fn(arguments)
 }
 
 func (e *executor) defineLocal(name string, value Value) {
-	e.scopes[len(e.scopes)-1][name] = value
+	e.scopes[len(e.scopes)-1][name] = &valueCell{value: value}
 }
 
 func (e *executor) assign(name string, value Value) {
 	for index := len(e.scopes) - 1; index >= 0; index-- {
-		if _, ok := e.scopes[index][name]; ok {
-			e.scopes[index][name] = value
+		if cell, ok := e.scopes[index][name]; ok {
+			cell.value = value
 			return
 		}
 	}
 
-	e.scopes[len(e.scopes)-1][name] = value
+	e.scopes[len(e.scopes)-1][name] = &valueCell{value: value}
 }
 
 func (e *executor) lookup(name string) (Value, bool) {
 	for index := len(e.scopes) - 1; index >= 0; index-- {
-		value, ok := e.scopes[index][name]
+		cell, ok := e.scopes[index][name]
 		if ok {
-			return value, true
+			return cell.value, true
 		}
 	}
 
 	return NilValue(), false
+}
+
+func (e *executor) snapshotVisibleCells() map[string]*valueCell {
+	snapshot := make(map[string]*valueCell)
+	for _, scope := range e.scopes {
+		for name, cell := range scope {
+			snapshot[name] = cell
+		}
+	}
+
+	return snapshot
+}
+
+func copyCellMap(input map[string]*valueCell) map[string]*valueCell {
+	if input == nil {
+		return map[string]*valueCell{}
+	}
+
+	output := make(map[string]*valueCell, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+
+	return output
 }
 
 func (e *executor) evaluateUnaryExpression(expression *ir.UnaryExpression) (Value, error) {
@@ -450,6 +694,15 @@ func comparisonBinary(left, right Value, operator string, fn func(float64, float
 	}
 
 	return Value{Type: ValueTypeBoolean, Data: fn(leftNumber, rightNumber)}, nil
+}
+
+// numericForContinues applies Lua-style numeric for-loop bounds for positive and negative steps.
+func numericForContinues(current float64, limit float64, step float64) bool {
+	if step > 0 {
+		return current <= limit
+	}
+
+	return current >= limit
 }
 
 func requireNumber(value Value, operator string) (float64, error) {

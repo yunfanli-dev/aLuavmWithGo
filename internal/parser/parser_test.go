@@ -82,7 +82,7 @@ func TestParseMultipleLocalNamesAndValues(t *testing.T) {
 }
 
 func TestParseReturnsHelpfulErrorForUnsupportedStatement(t *testing.T) {
-	_, err := ParseString("for.lua", "for i = 1, 3 do return i end")
+	_, err := ParseString("generic_for.lua", "for k, v in t do return k end")
 	if err == nil {
 		t.Fatal("expected parser error")
 	}
@@ -92,8 +92,8 @@ func TestParseReturnsHelpfulErrorForUnsupportedStatement(t *testing.T) {
 		t.Fatalf("expected parser error type, got %T", err)
 	}
 
-	if parseErr.Token.Type != "for" {
-		t.Fatalf("expected failing token to be 'for', got %q", parseErr.Token.Type)
+	if parseErr.Token.Type != "," {
+		t.Fatalf("expected failing token to be ',', got %q", parseErr.Token.Type)
 	}
 }
 
@@ -148,5 +148,80 @@ return add(1, 2)
 
 	if _, ok := returnStmt.Values[0].(*CallExpression); !ok {
 		t.Fatalf("expected return value to be call expression, got %T", returnStmt.Values[0])
+	}
+}
+
+func TestParseTableConstructorAndIndexing(t *testing.T) {
+	chunk, err := ParseString("table.lua", `
+local t = { answer = 42, ["name"] = "lua" }
+t.answer = t["answer"] + 1
+return t.name
+`)
+	if err != nil {
+		t.Fatalf("parse table script: %v", err)
+	}
+
+	if len(chunk.Statements) != 3 {
+		t.Fatalf("expected 3 top-level statements, got %d", len(chunk.Statements))
+	}
+
+	localStmt := chunk.Statements[0].(*LocalAssignStatement)
+	if _, ok := localStmt.Values[0].(*TableConstructorExpression); !ok {
+		t.Fatalf("expected local assignment value to be table constructor, got %T", localStmt.Values[0])
+	}
+
+	assignStmt := chunk.Statements[1].(*AssignStatement)
+	if _, ok := assignStmt.Targets[0].(*IndexExpression); !ok {
+		t.Fatalf("expected assignment target to be index expression, got %T", assignStmt.Targets[0])
+	}
+}
+
+func TestParseLocalAndAnonymousFunction(t *testing.T) {
+	chunk, err := ParseString("closures.lua", `
+local function addOne(n)
+	return n + 1
+end
+local makeAdder = function(step)
+	return function(value)
+		return value + step
+	end
+end
+return addOne(1), makeAdder(2)(3)
+`)
+	if err != nil {
+		t.Fatalf("parse functions: %v", err)
+	}
+
+	if _, ok := chunk.Statements[0].(*LocalFunctionDeclarationStatement); !ok {
+		t.Fatalf("expected first statement to be local function, got %T", chunk.Statements[0])
+	}
+
+	localAssign := chunk.Statements[1].(*LocalAssignStatement)
+	if _, ok := localAssign.Values[0].(*FunctionExpression); !ok {
+		t.Fatalf("expected local assignment value to be function expression, got %T", localAssign.Values[0])
+	}
+}
+
+func TestParseRepeatUntilAndNumericFor(t *testing.T) {
+	chunk, err := ParseString("loops.lua", `
+local total = 0
+repeat
+	total = total + 1
+until total == 2
+for i = 1, 3, 1 do
+	total = total + i
+end
+return total
+`)
+	if err != nil {
+		t.Fatalf("parse loops: %v", err)
+	}
+
+	if _, ok := chunk.Statements[1].(*RepeatStatement); !ok {
+		t.Fatalf("expected second statement to be repeat, got %T", chunk.Statements[1])
+	}
+
+	if _, ok := chunk.Statements[2].(*NumericForStatement); !ok {
+		t.Fatalf("expected third statement to be numeric for, got %T", chunk.Statements[2])
 	}
 }
