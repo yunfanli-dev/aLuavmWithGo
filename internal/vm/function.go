@@ -13,6 +13,7 @@ type valueCell struct {
 type userFunction struct {
 	name       string
 	parameters []string
+	isVararg   bool
 	body       []ir.Statement
 	captured   map[string]*valueCell
 }

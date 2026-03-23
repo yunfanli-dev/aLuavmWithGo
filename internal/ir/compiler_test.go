@@ -95,6 +95,47 @@ return add(1, 2)
 	}
 }
 
+func TestCompileChunkBuildsMethodCallIR(t *testing.T) {
+	chunk, err := parser.ParseString("method.lua", `
+function counter:inc(step)
+	return self.value + step
+end
+return counter:inc(2)
+`)
+	if err != nil {
+		t.Fatalf("parse chunk: %v", err)
+	}
+
+	program, err := CompileChunk(chunk)
+	if err != nil {
+		t.Fatalf("compile chunk: %v", err)
+	}
+
+	assignStmt, ok := program.Statements[0].(*AssignStatement)
+	if !ok {
+		t.Fatalf("expected first IR statement to be lowered assign, got %T", program.Statements[0])
+	}
+
+	fn, ok := assignStmt.Values[0].(*FunctionExpression)
+	if !ok {
+		t.Fatalf("expected lowered method definition value to be function expression, got %T", assignStmt.Values[0])
+	}
+
+	if len(fn.Parameters) == 0 || fn.Parameters[0] != "self" {
+		t.Fatalf("expected implicit self parameter, got %#v", fn.Parameters)
+	}
+
+	returnStmt := program.Statements[1].(*ReturnStatement)
+	call, ok := returnStmt.Values[0].(*CallExpression)
+	if !ok {
+		t.Fatalf("expected method call IR expression, got %T", returnStmt.Values[0])
+	}
+
+	if call.Receiver == nil || call.Method != "inc" {
+		t.Fatalf("expected IR method receiver and name, got %#v", call)
+	}
+}
+
 func TestCompileChunkBuildsTableIR(t *testing.T) {
 	chunk, err := parser.ParseString("table.lua", `
 local t = { answer = 42 }
@@ -118,6 +159,28 @@ return t["answer"]
 	assignStmt := program.Statements[1].(*AssignStatement)
 	if _, ok := assignStmt.Targets[0].(*IndexExpression); !ok {
 		t.Fatalf("expected assignment target to be index expression, got %T", assignStmt.Targets[0])
+	}
+}
+
+func TestCompileChunkPreservesTableListFieldMarkers(t *testing.T) {
+	chunk, err := parser.ParseString("table_list.lua", `return { 1, pair() }`)
+	if err != nil {
+		t.Fatalf("parse chunk: %v", err)
+	}
+
+	program, err := CompileChunk(chunk)
+	if err != nil {
+		t.Fatalf("compile chunk: %v", err)
+	}
+
+	returnStmt := program.Statements[0].(*ReturnStatement)
+	tableExpr := returnStmt.Values[0].(*TableConstructorExpression)
+	if len(tableExpr.Fields) != 2 {
+		t.Fatalf("expected 2 table fields, got %d", len(tableExpr.Fields))
+	}
+
+	if !tableExpr.Fields[0].IsListField || !tableExpr.Fields[1].IsListField {
+		t.Fatalf("expected IR list fields to be marked, got %#v", tableExpr.Fields)
 	}
 }
 
@@ -152,6 +215,53 @@ return addOne(1), makeAdder(2)(3)
 	}
 }
 
+func TestCompileChunkBuildsVarargFunctionIR(t *testing.T) {
+	chunk, err := parser.ParseString("vararg.lua", `
+function pick(first, ...)
+	return first, ...
+end
+`)
+	if err != nil {
+		t.Fatalf("parse chunk: %v", err)
+	}
+
+	program, err := CompileChunk(chunk)
+	if err != nil {
+		t.Fatalf("compile chunk: %v", err)
+	}
+
+	fn, ok := program.Statements[0].(*FunctionDeclarationStatement)
+	if !ok {
+		t.Fatalf("expected first IR statement to be function declaration, got %T", program.Statements[0])
+	}
+
+	if !fn.IsVararg {
+		t.Fatal("expected IR function to be vararg")
+	}
+
+	returnStmt := fn.Body[0].(*ReturnStatement)
+	if _, ok := returnStmt.Values[1].(*VarargExpression); !ok {
+		t.Fatalf("expected second IR return expression to be vararg, got %T", returnStmt.Values[1])
+	}
+}
+
+func TestCompileChunkPreservesParenthesizedExpressionIR(t *testing.T) {
+	chunk, err := parser.ParseString("paren.lua", `return (pair())`)
+	if err != nil {
+		t.Fatalf("parse chunk: %v", err)
+	}
+
+	program, err := CompileChunk(chunk)
+	if err != nil {
+		t.Fatalf("compile chunk: %v", err)
+	}
+
+	returnStmt := program.Statements[0].(*ReturnStatement)
+	if _, ok := returnStmt.Values[0].(*ParenthesizedExpression); !ok {
+		t.Fatalf("expected IR return expression to be parenthesized, got %T", returnStmt.Values[0])
+	}
+}
+
 func TestCompileChunkBuildsRepeatAndNumericForIR(t *testing.T) {
 	chunk, err := parser.ParseString("loops.lua", `
 local total = 0
@@ -178,6 +288,38 @@ return total
 
 	if _, ok := program.Statements[2].(*NumericForStatement); !ok {
 		t.Fatalf("expected third IR statement to be numeric for, got %T", program.Statements[2])
+	}
+}
+
+func TestCompileChunkBuildsDoAndBreakIR(t *testing.T) {
+	chunk, err := parser.ParseString("do_break.lua", `
+do
+	local n = 1
+end
+while true do
+	break
+end
+`)
+	if err != nil {
+		t.Fatalf("parse chunk: %v", err)
+	}
+
+	program, err := CompileChunk(chunk)
+	if err != nil {
+		t.Fatalf("compile chunk: %v", err)
+	}
+
+	if _, ok := program.Statements[0].(*DoStatement); !ok {
+		t.Fatalf("expected first IR statement to be do, got %T", program.Statements[0])
+	}
+
+	whileStmt, ok := program.Statements[1].(*WhileStatement)
+	if !ok {
+		t.Fatalf("expected second IR statement to be while, got %T", program.Statements[1])
+	}
+
+	if _, ok := whileStmt.Body[0].(*BreakStatement); !ok {
+		t.Fatalf("expected while body to contain break, got %T", whileStmt.Body[0])
 	}
 }
 

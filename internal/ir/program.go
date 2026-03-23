@@ -37,6 +37,7 @@ type AssignStatement struct {
 type FunctionDeclarationStatement struct {
 	Name       string
 	Parameters []string
+	IsVararg   bool
 	Body       []Statement
 }
 
@@ -44,6 +45,7 @@ type FunctionDeclarationStatement struct {
 type LocalFunctionDeclarationStatement struct {
 	Name       string
 	Parameters []string
+	IsVararg   bool
 	Body       []Statement
 }
 
@@ -52,6 +54,14 @@ type LocalAssignStatement struct {
 	Names  []string
 	Values []Expression
 }
+
+// DoStatement represents an IR scoped block.
+type DoStatement struct {
+	Body []Statement
+}
+
+// BreakStatement represents an IR break statement.
+type BreakStatement struct{}
 
 // IfClause represents one IR conditional branch.
 type IfClause struct {
@@ -106,13 +116,24 @@ type IdentifierExpression struct {
 // CallExpression represents an IR function call.
 type CallExpression struct {
 	Callee    Expression
+	Receiver  Expression
+	Method    string
 	Arguments []Expression
 }
 
 // FunctionExpression represents an IR anonymous function.
 type FunctionExpression struct {
 	Parameters []string
+	IsVararg   bool
 	Body       []Statement
+}
+
+// VarargExpression represents the IR `...` expression.
+type VarargExpression struct{}
+
+// ParenthesizedExpression represents grouped IR expressions and preserves single-value semantics.
+type ParenthesizedExpression struct {
+	Inner Expression
 }
 
 // IndexExpression represents table indexing in the IR.
@@ -123,8 +144,9 @@ type IndexExpression struct {
 
 // TableField represents one field in an IR table constructor.
 type TableField struct {
-	Key   Expression
-	Value Expression
+	Key         Expression
+	Value       Expression
+	IsListField bool
 }
 
 // TableConstructorExpression represents an IR table constructor.
@@ -169,6 +191,8 @@ func (*AssignStatement) node()                        {}
 func (*FunctionDeclarationStatement) node()           {}
 func (*LocalFunctionDeclarationStatement) node()      {}
 func (*LocalAssignStatement) node()                   {}
+func (*DoStatement) node()                            {}
+func (*BreakStatement) node()                         {}
 func (*IfStatement) node()                            {}
 func (*WhileStatement) node()                         {}
 func (*RepeatStatement) node()                        {}
@@ -178,6 +202,8 @@ func (*ReturnStatement) node()                        {}
 func (*IdentifierExpression) node()                   {}
 func (*CallExpression) node()                         {}
 func (*FunctionExpression) node()                     {}
+func (*VarargExpression) node()                       {}
+func (*ParenthesizedExpression) node()                {}
 func (*IndexExpression) node()                        {}
 func (*TableConstructorExpression) node()             {}
 func (*NilExpression) node()                          {}
@@ -191,6 +217,8 @@ func (*AssignStatement) statement()                   {}
 func (*FunctionDeclarationStatement) statement()      {}
 func (*LocalFunctionDeclarationStatement) statement() {}
 func (*LocalAssignStatement) statement()              {}
+func (*DoStatement) statement()                       {}
+func (*BreakStatement) statement()                    {}
 func (*IfStatement) statement()                       {}
 func (*WhileStatement) statement()                    {}
 func (*RepeatStatement) statement()                   {}
@@ -200,6 +228,8 @@ func (*ReturnStatement) statement()                   {}
 func (*IdentifierExpression) expression()             {}
 func (*CallExpression) expression()                   {}
 func (*FunctionExpression) expression()               {}
+func (*VarargExpression) expression()                 {}
+func (*ParenthesizedExpression) expression()          {}
 func (*IndexExpression) expression()                  {}
 func (*TableConstructorExpression) expression()       {}
 func (*NilExpression) expression()                    {}

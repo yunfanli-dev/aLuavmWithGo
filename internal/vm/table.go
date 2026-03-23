@@ -3,9 +3,10 @@ package vm
 import "fmt"
 
 type table struct {
-	entries map[string]Value
-	keys    map[string]Value
-	order   []string
+	entries   map[string]Value
+	keys      map[string]Value
+	order     []string
+	metatable *table
 }
 
 // newTable creates the runtime storage used by the current Lua table subset.
@@ -54,6 +55,33 @@ func (t *table) set(key Value, value Value) error {
 	t.entries[storageKey] = value
 	t.keys[storageKey] = key
 	return nil
+}
+
+// getMetatable returns the currently attached metatable, if any.
+func (t *table) getMetatable() *table {
+	if t == nil {
+		return nil
+	}
+
+	return t.metatable
+}
+
+// getProtectedMetatable returns the protected metatable view exposed by getmetatable, if configured.
+func (t *table) getProtectedMetatable() (Value, bool, error) {
+	if t == nil || t.metatable == nil {
+		return NilValue(), false, nil
+	}
+
+	return t.metatable.get(Value{Type: ValueTypeString, Data: "__metatable"})
+}
+
+// setMetatable replaces the current table metatable.
+func (t *table) setMetatable(metatable *table) {
+	if t == nil {
+		return
+	}
+
+	t.metatable = metatable
 }
 
 // next returns the next key/value pair after the provided key using insertion order.

@@ -49,6 +49,7 @@ type AssignStatement struct {
 type FunctionDeclarationStatement struct {
 	Name       Identifier
 	Parameters []Identifier
+	IsVararg   bool
 	Body       []Statement
 	span       Span
 }
@@ -57,6 +58,7 @@ type FunctionDeclarationStatement struct {
 type LocalFunctionDeclarationStatement struct {
 	Name       Identifier
 	Parameters []Identifier
+	IsVararg   bool
 	Body       []Statement
 	span       Span
 }
@@ -66,6 +68,17 @@ type LocalAssignStatement struct {
 	Names  []Identifier
 	Values []Expression
 	span   Span
+}
+
+// DoStatement represents `do ... end`.
+type DoStatement struct {
+	Body []Statement
+	span Span
+}
+
+// BreakStatement represents `break`.
+type BreakStatement struct {
+	span Span
 }
 
 // IfClause represents one condition/body branch of an if statement.
@@ -129,6 +142,8 @@ type Identifier struct {
 // CallExpression represents `callee(args)`.
 type CallExpression struct {
 	Callee    Expression
+	Receiver  Expression
+	Method    string
 	Arguments []Expression
 	span      Span
 }
@@ -136,8 +151,20 @@ type CallExpression struct {
 // FunctionExpression represents `function(args) ... end`.
 type FunctionExpression struct {
 	Parameters []Identifier
+	IsVararg   bool
 	Body       []Statement
 	span       Span
+}
+
+// VarargExpression represents the Lua `...` expression.
+type VarargExpression struct {
+	span Span
+}
+
+// ParenthesizedExpression represents `(expr)` and preserves grouping semantics.
+type ParenthesizedExpression struct {
+	Inner Expression
+	span  Span
 }
 
 // IndexExpression represents `target[index]` and `target.name`.
@@ -149,9 +176,10 @@ type IndexExpression struct {
 
 // TableField represents one field inside a table constructor.
 type TableField struct {
-	Key   Expression
-	Value Expression
-	span  Span
+	Key         Expression
+	Value       Expression
+	IsListField bool
+	span        Span
 }
 
 // TableConstructorExpression represents `{ ... }`.
@@ -204,6 +232,8 @@ func (*AssignStatement) node()                   {}
 func (*FunctionDeclarationStatement) node()      {}
 func (*LocalFunctionDeclarationStatement) node() {}
 func (*LocalAssignStatement) node()              {}
+func (*DoStatement) node()                       {}
+func (*BreakStatement) node()                    {}
 func (*IfStatement) node()                       {}
 func (*WhileStatement) node()                    {}
 func (*RepeatStatement) node()                   {}
@@ -215,6 +245,8 @@ func (*CallExpression) node()                    {}
 func (*FunctionExpression) node()                {}
 func (*IndexExpression) node()                   {}
 func (*TableConstructorExpression) node()        {}
+func (*VarargExpression) node()                  {}
+func (*ParenthesizedExpression) node()           {}
 func (*NilExpression) node()                     {}
 func (*BooleanExpression) node()                 {}
 func (*NumberExpression) node()                  {}
@@ -227,6 +259,8 @@ func (*AssignStatement) statement()                   {}
 func (*FunctionDeclarationStatement) statement()      {}
 func (*LocalFunctionDeclarationStatement) statement() {}
 func (*LocalAssignStatement) statement()              {}
+func (*DoStatement) statement()                       {}
+func (*BreakStatement) statement()                    {}
 func (*IfStatement) statement()                       {}
 func (*WhileStatement) statement()                    {}
 func (*RepeatStatement) statement()                   {}
@@ -239,6 +273,8 @@ func (*CallExpression) expression()             {}
 func (*FunctionExpression) expression()         {}
 func (*IndexExpression) expression()            {}
 func (*TableConstructorExpression) expression() {}
+func (*VarargExpression) expression()           {}
+func (*ParenthesizedExpression) expression()    {}
 func (*NilExpression) expression()              {}
 func (*BooleanExpression) expression()          {}
 func (*NumberExpression) expression()           {}
@@ -263,6 +299,12 @@ func (s *LocalFunctionDeclarationStatement) Span() Span { return s.span }
 
 // Span reports the source range for a local assignment statement.
 func (s *LocalAssignStatement) Span() Span { return s.span }
+
+// Span reports the source range for a do statement.
+func (s *DoStatement) Span() Span { return s.span }
+
+// Span reports the source range for a break statement.
+func (s *BreakStatement) Span() Span { return s.span }
 
 // Span reports the source range for an if clause.
 func (c *IfClause) Span() Span { return c.span }
@@ -293,6 +335,12 @@ func (e *CallExpression) Span() Span { return e.span }
 
 // Span reports the source range for a function expression.
 func (e *FunctionExpression) Span() Span { return e.span }
+
+// Span reports the source range for a vararg expression.
+func (e *VarargExpression) Span() Span { return e.span }
+
+// Span reports the source range for a parenthesized expression.
+func (e *ParenthesizedExpression) Span() Span { return e.span }
 
 // Span reports the source range for an index expression.
 func (e *IndexExpression) Span() Span { return e.span }

@@ -75,6 +75,7 @@ func (c *compiler) compileStatement(statement parser.Statement) (Statement, erro
 		return &FunctionDeclarationStatement{
 			Name:       node.Name.Name,
 			Parameters: parameters,
+			IsVararg:   node.IsVararg,
 			Body:       body,
 		}, nil
 	case *parser.LocalFunctionDeclarationStatement:
@@ -91,6 +92,7 @@ func (c *compiler) compileStatement(statement parser.Statement) (Statement, erro
 		return &LocalFunctionDeclarationStatement{
 			Name:       node.Name.Name,
 			Parameters: parameters,
+			IsVararg:   node.IsVararg,
 			Body:       body,
 		}, nil
 	case *parser.LocalAssignStatement:
@@ -108,6 +110,15 @@ func (c *compiler) compileStatement(statement parser.Statement) (Statement, erro
 			Names:  names,
 			Values: values,
 		}, nil
+	case *parser.DoStatement:
+		body, err := c.compileStatements(node.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		return &DoStatement{Body: body}, nil
+	case *parser.BreakStatement:
+		return &BreakStatement{}, nil
 	case *parser.IfStatement:
 		clauses := make([]IfClause, 0, len(node.Clauses))
 		for _, clause := range node.Clauses {
@@ -274,8 +285,18 @@ func (c *compiler) compileExpression(expression parser.Expression) (Expression, 
 
 		return &FunctionExpression{
 			Parameters: parameters,
+			IsVararg:   node.IsVararg,
 			Body:       body,
 		}, nil
+	case *parser.VarargExpression:
+		return &VarargExpression{}, nil
+	case *parser.ParenthesizedExpression:
+		inner, err := c.compileExpression(node.Inner)
+		if err != nil {
+			return nil, err
+		}
+
+		return &ParenthesizedExpression{Inner: inner}, nil
 	case *parser.IndexExpression:
 		target, err := c.compileExpression(node.Target)
 		if err != nil {
@@ -301,7 +322,11 @@ func (c *compiler) compileExpression(expression parser.Expression) (Expression, 
 				return nil, err
 			}
 
-			fields = append(fields, TableField{Key: key, Value: value})
+			fields = append(fields, TableField{
+				Key:         key,
+				Value:       value,
+				IsListField: field.IsListField,
+			})
 		}
 
 		return &TableConstructorExpression{Fields: fields}, nil
@@ -345,9 +370,24 @@ func (c *compiler) compileExpression(expression parser.Expression) (Expression, 
 }
 
 func (c *compiler) compileCallExpression(expression *parser.CallExpression) (*CallExpression, error) {
-	callee, err := c.compileExpression(expression.Callee)
-	if err != nil {
-		return nil, err
+	var (
+		callee   Expression
+		receiver Expression
+		err      error
+	)
+
+	if expression.Callee != nil {
+		callee, err = c.compileExpression(expression.Callee)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if expression.Receiver != nil {
+		receiver, err = c.compileExpression(expression.Receiver)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	arguments, err := c.compileExpressions(expression.Arguments)
@@ -357,6 +397,8 @@ func (c *compiler) compileCallExpression(expression *parser.CallExpression) (*Ca
 
 	return &CallExpression{
 		Callee:    callee,
+		Receiver:  receiver,
+		Method:    expression.Method,
 		Arguments: arguments,
 	}, nil
 }

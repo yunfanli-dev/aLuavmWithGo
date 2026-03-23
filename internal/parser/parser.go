@@ -9,9 +9,10 @@ import (
 
 // Parser consumes lexer tokens and builds a Lua 5.1 subset AST.
 type Parser struct {
-	source string
-	tokens []lexer.Token
-	index  int
+	source       string
+	tokens       []lexer.Token
+	index        int
+	varargScopes []bool
 }
 
 // ParseString tokenizes and parses a Lua source string into a chunk AST.
@@ -35,6 +36,8 @@ func New(sourceName string, tokens []lexer.Token) *Parser {
 	return &Parser{
 		source: sourceName,
 		tokens: tokens,
+		// Top-level chunk is never a vararg function body.
+		varargScopes: []bool{false},
 	}
 }
 
@@ -84,6 +87,10 @@ func (p *Parser) parseStatement() (Statement, error) {
 		}
 
 		return p.parseLocalAssignStatement()
+	case lexer.TokenDo:
+		return p.parseDoStatement()
+	case lexer.TokenBreak:
+		return p.parseBreakStatement()
 	case lexer.TokenIdentifier:
 		return p.parseIdentifierLedStatement()
 	case lexer.TokenIf:
@@ -100,6 +107,44 @@ func (p *Parser) parseStatement() (Statement, error) {
 		// TODO: Extend statement parsing with remaining Lua 5.1 subset forms like repeatable block statements.
 		return nil, p.errorAtCurrent(fmt.Sprintf("unsupported statement starting with %q", p.current().Type))
 	}
+}
+
+// parseDoStatement parses a block scoped by `do ... end`.
+func (p *Parser) parseDoStatement() (Statement, error) {
+	startToken, err := p.expect(lexer.TokenDo, "expected 'do'")
+	if err != nil {
+		return nil, err
+	}
+
+	body, _, err := p.parseBlock(lexer.TokenEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	endToken, err := p.expect(lexer.TokenEnd, "expected 'end' after do block")
+	if err != nil {
+		return nil, err
+	}
+
+	return &DoStatement{
+		Body: body,
+		span: Span{
+			Start: startToken.Start,
+			End:   endToken.End,
+		},
+	}, nil
+}
+
+// parseBreakStatement parses a `break` control-flow statement.
+func (p *Parser) parseBreakStatement() (Statement, error) {
+	breakToken, err := p.expect(lexer.TokenBreak, "expected 'break'")
+	if err != nil {
+		return nil, err
+	}
+
+	return &BreakStatement{
+		span: tokenSpan(breakToken),
+	}, nil
 }
 
 func (p *Parser) parseIdentifierLedStatement() (Statement, error) {
@@ -166,20 +211,52 @@ func (p *Parser) parseFunctionDeclarationStatement() (Statement, error) {
 		return nil, err
 	}
 
-	nameToken, err := p.expect(lexer.TokenIdentifier, "expected function name")
+	target, methodSelf, err := p.parseFunctionName()
 	if err != nil {
 		return nil, err
 	}
 
-	parameters, body, endToken, err := p.parseFunctionBody()
+	parameters, isVararg, body, endToken, err := p.parseFunctionBody()
 	if err != nil {
 		return nil, err
 	}
 
-	return &FunctionDeclarationStatement{
-		Name:       Identifier{Name: nameToken.Literal, span: tokenSpan(nameToken)},
+	if methodSelf {
+		selfToken := lexer.Token{
+			Type:    lexer.TokenIdentifier,
+			Literal: "self",
+			Start:   startToken.Start,
+			End:     startToken.End,
+		}
+		parameters = append([]Identifier{{Name: "self", span: tokenSpan(selfToken)}}, parameters...)
+	}
+
+	if identifier, ok := target.(*Identifier); ok && !methodSelf {
+		return &FunctionDeclarationStatement{
+			Name:       *identifier,
+			Parameters: parameters,
+			IsVararg:   isVararg,
+			Body:       body,
+			span: Span{
+				Start: startToken.Start,
+				End:   endToken.End,
+			},
+		}, nil
+	}
+
+	functionExpr := &FunctionExpression{
 		Parameters: parameters,
+		IsVararg:   isVararg,
 		Body:       body,
+		span: Span{
+			Start: startToken.Start,
+			End:   endToken.End,
+		},
+	}
+
+	return &AssignStatement{
+		Targets: []Expression{target},
+		Values:  []Expression{functionExpr},
 		span: Span{
 			Start: startToken.Start,
 			End:   endToken.End,
@@ -202,7 +279,7 @@ func (p *Parser) parseLocalFunctionDeclarationStatement() (Statement, error) {
 		return nil, err
 	}
 
-	parameters, body, endToken, err := p.parseFunctionBody()
+	parameters, isVararg, body, endToken, err := p.parseFunctionBody()
 	if err != nil {
 		return nil, err
 	}
@@ -210,12 +287,59 @@ func (p *Parser) parseLocalFunctionDeclarationStatement() (Statement, error) {
 	return &LocalFunctionDeclarationStatement{
 		Name:       Identifier{Name: nameToken.Literal, span: tokenSpan(nameToken)},
 		Parameters: parameters,
+		IsVararg:   isVararg,
 		Body:       body,
 		span: Span{
 			Start: startToken.Start,
 			End:   endToken.End,
 		},
 	}, nil
+}
+
+// parseFunctionName parses a function declaration name and method suffix in Lua function sugar.
+func (p *Parser) parseFunctionName() (Expression, bool, error) {
+	nameToken, err := p.expect(lexer.TokenIdentifier, "expected function name")
+	if err != nil {
+		return nil, false, err
+	}
+
+	var target Expression = &Identifier{Name: nameToken.Literal, span: tokenSpan(nameToken)}
+	methodSelf := false
+
+	for p.match(lexer.TokenDot) {
+		fieldToken, err := p.expect(lexer.TokenIdentifier, "expected field name after '.' in function name")
+		if err != nil {
+			return nil, false, err
+		}
+
+		target = &IndexExpression{
+			Target: target,
+			Index:  &StringExpression{Value: fieldToken.Literal, span: tokenSpan(fieldToken)},
+			span: Span{
+				Start: target.Span().Start,
+				End:   fieldToken.End,
+			},
+		}
+	}
+
+	if p.match(lexer.TokenColon) {
+		fieldToken, err := p.expect(lexer.TokenIdentifier, "expected method name after ':' in function name")
+		if err != nil {
+			return nil, false, err
+		}
+
+		methodSelf = true
+		target = &IndexExpression{
+			Target: target,
+			Index:  &StringExpression{Value: fieldToken.Literal, span: tokenSpan(fieldToken)},
+			span: Span{
+				Start: target.Span().Start,
+				End:   fieldToken.End,
+			},
+		}
+	}
+
+	return target, methodSelf, nil
 }
 
 func (p *Parser) parseLocalAssignStatement() (Statement, error) {
@@ -668,6 +792,13 @@ func (p *Parser) parseSuffixedExpression(allowCalls bool) (Expression, error) {
 	case lexer.TokenString:
 		p.advance()
 		expression = &StringExpression{Value: token.Literal, span: tokenSpan(token)}
+	case lexer.TokenVararg:
+		if !p.currentVarargScope() {
+			return nil, p.errorAtCurrent("vararg expression is only allowed inside a vararg function")
+		}
+
+		p.advance()
+		expression = &VarargExpression{span: tokenSpan(token)}
 	case lexer.TokenIdentifier:
 		p.advance()
 		expression = &Identifier{Name: token.Literal, span: tokenSpan(token)}
@@ -681,17 +812,24 @@ func (p *Parser) parseSuffixedExpression(allowCalls bool) (Expression, error) {
 	case lexer.TokenLeftBrace:
 		return p.parseTableConstructorExpression()
 	case lexer.TokenLeftParen:
-		p.advance()
+		startToken := p.advance()
 		expr, err := p.parseExpression()
 		if err != nil {
 			return nil, err
 		}
 
-		if _, err := p.expect(lexer.TokenRightParen, "expected ')' after expression"); err != nil {
+		endToken, err := p.expect(lexer.TokenRightParen, "expected ')' after expression")
+		if err != nil {
 			return nil, err
 		}
 
-		expression = expr
+		expression = &ParenthesizedExpression{
+			Inner: expr,
+			span: Span{
+				Start: startToken.Start,
+				End:   endToken.End,
+			},
+		}
 	default:
 		// TODO: Extend primary parsing with Lua 5.1 subset forms like function expressions and table constructors.
 		return nil, p.errorAtCurrent(fmt.Sprintf("unexpected token %q in expression", token.Type))
@@ -701,6 +839,27 @@ func (p *Parser) parseSuffixedExpression(allowCalls bool) (Expression, error) {
 		switch {
 		case allowCalls && p.check(lexer.TokenLeftParen):
 			call, err := p.finishCallExpression(expression)
+			if err != nil {
+				return nil, err
+			}
+
+			expression = call
+		case allowCalls && p.check(lexer.TokenLeftBrace):
+			call, err := p.finishTableCallExpression(expression)
+			if err != nil {
+				return nil, err
+			}
+
+			expression = call
+		case allowCalls && p.check(lexer.TokenString):
+			call, err := p.finishStringCallExpression(expression)
+			if err != nil {
+				return nil, err
+			}
+
+			expression = call
+		case allowCalls && p.match(lexer.TokenColon):
+			call, err := p.finishMethodCallExpression(expression)
 			if err != nil {
 				return nil, err
 			}
@@ -751,13 +910,14 @@ func (p *Parser) parseFunctionExpression() (*FunctionExpression, error) {
 		return nil, err
 	}
 
-	parameters, body, endToken, err := p.parseFunctionBody()
+	parameters, isVararg, body, endToken, err := p.parseFunctionBody()
 	if err != nil {
 		return nil, err
 	}
 
 	return &FunctionExpression{
 		Parameters: parameters,
+		IsVararg:   isVararg,
 		Body:       body,
 		span: Span{
 			Start: startToken.Start,
@@ -766,21 +926,24 @@ func (p *Parser) parseFunctionExpression() (*FunctionExpression, error) {
 	}, nil
 }
 
-func (p *Parser) parseFunctionBody() ([]Identifier, []Statement, lexer.Token, error) {
+func (p *Parser) parseFunctionBody() ([]Identifier, bool, []Statement, lexer.Token, error) {
 	if _, err := p.expect(lexer.TokenLeftParen, "expected '(' after function name"); err != nil {
-		return nil, nil, lexer.Token{}, err
+		return nil, false, nil, lexer.Token{}, err
 	}
 
 	parameters := make([]Identifier, 0)
+	isVararg := false
 	if !p.check(lexer.TokenRightParen) {
 		for {
 			if p.check(lexer.TokenVararg) {
-				return nil, nil, lexer.Token{}, p.errorAtCurrent("vararg parameters are not implemented yet")
+				p.advance()
+				isVararg = true
+				break
 			}
 
 			parameterToken, err := p.expect(lexer.TokenIdentifier, "expected parameter name")
 			if err != nil {
-				return nil, nil, lexer.Token{}, err
+				return nil, false, nil, lexer.Token{}, err
 			}
 
 			parameters = append(parameters, Identifier{Name: parameterToken.Literal, span: tokenSpan(parameterToken)})
@@ -791,20 +954,43 @@ func (p *Parser) parseFunctionBody() ([]Identifier, []Statement, lexer.Token, er
 	}
 
 	if _, err := p.expect(lexer.TokenRightParen, "expected ')' after parameter list"); err != nil {
-		return nil, nil, lexer.Token{}, err
+		return nil, false, nil, lexer.Token{}, err
 	}
+
+	p.pushVarargScope(isVararg)
+	defer p.popVarargScope()
 
 	body, _, err := p.parseBlock(lexer.TokenEnd)
 	if err != nil {
-		return nil, nil, lexer.Token{}, err
+		return nil, false, nil, lexer.Token{}, err
 	}
 
 	endToken, err := p.expect(lexer.TokenEnd, "expected 'end' after function declaration")
 	if err != nil {
-		return nil, nil, lexer.Token{}, err
+		return nil, false, nil, lexer.Token{}, err
 	}
 
-	return parameters, body, endToken, nil
+	return parameters, isVararg, body, endToken, nil
+}
+
+func (p *Parser) pushVarargScope(isVararg bool) {
+	p.varargScopes = append(p.varargScopes, isVararg)
+}
+
+func (p *Parser) popVarargScope() {
+	if len(p.varargScopes) <= 1 {
+		return
+	}
+
+	p.varargScopes = p.varargScopes[:len(p.varargScopes)-1]
+}
+
+func (p *Parser) currentVarargScope() bool {
+	if len(p.varargScopes) == 0 {
+		return false
+	}
+
+	return p.varargScopes[len(p.varargScopes)-1]
 }
 
 func (p *Parser) current() lexer.Token {
@@ -837,7 +1023,6 @@ func (p *Parser) previous() lexer.Token {
 }
 
 func (p *Parser) finishCallExpression(callee Expression) (*CallExpression, error) {
-	start := callee.Span().Start
 	if _, err := p.expect(lexer.TokenLeftParen, "expected '(' after callee"); err != nil {
 		return nil, err
 	}
@@ -857,14 +1042,99 @@ func (p *Parser) finishCallExpression(callee Expression) (*CallExpression, error
 		return nil, err
 	}
 
+	return p.newCallExpression(callee, nil, "", arguments, endToken.End), nil
+}
+
+// finishTableCallExpression parses the Lua 5.1 `callee{...}` call sugar as a single table argument.
+func (p *Parser) finishTableCallExpression(callee Expression) (*CallExpression, error) {
+	argument, err := p.parseTableConstructorExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	return p.newCallExpression(callee, nil, "", []Expression{argument}, argument.Span().End), nil
+}
+
+// finishStringCallExpression parses the Lua 5.1 `callee"literal"` call sugar as a single string argument.
+func (p *Parser) finishStringCallExpression(callee Expression) (*CallExpression, error) {
+	token, err := p.expect(lexer.TokenString, "expected string literal after callee")
+	if err != nil {
+		return nil, err
+	}
+
+	argument := &StringExpression{Value: token.Literal, span: tokenSpan(token)}
+	return p.newCallExpression(callee, nil, "", []Expression{argument}, token.End), nil
+}
+
+// newCallExpression normalizes the parser's call sugar into the shared call AST shape.
+func (p *Parser) newCallExpression(callee Expression, receiver Expression, method string, arguments []Expression, end lexer.Position) *CallExpression {
 	return &CallExpression{
 		Callee:    callee,
+		Receiver:  receiver,
+		Method:    method,
 		Arguments: arguments,
 		span: Span{
-			Start: start,
-			End:   endToken.End,
+			Start: callStart(callee, receiver),
+			End:   end,
 		},
-	}, nil
+	}
+}
+
+// finishMethodCallExpression parses `receiver:name(args)` and keeps receiver evaluation single-shot.
+func (p *Parser) finishMethodCallExpression(receiver Expression) (*CallExpression, error) {
+	methodToken, err := p.expect(lexer.TokenIdentifier, "expected method name after ':'")
+	if err != nil {
+		return nil, err
+	}
+
+	switch p.current().Type {
+	case lexer.TokenLeftParen:
+		if _, err := p.expect(lexer.TokenLeftParen, "expected '(' after method name"); err != nil {
+			return nil, err
+		}
+
+		arguments := make([]Expression, 0)
+		if !p.check(lexer.TokenRightParen) {
+			values, err := p.parseExpressionList()
+			if err != nil {
+				return nil, err
+			}
+
+			arguments = values
+		}
+
+		endToken, err := p.expect(lexer.TokenRightParen, "expected ')' after argument list")
+		if err != nil {
+			return nil, err
+		}
+
+		return p.newCallExpression(nil, receiver, methodToken.Literal, arguments, endToken.End), nil
+	case lexer.TokenLeftBrace:
+		argument, err := p.parseTableConstructorExpression()
+		if err != nil {
+			return nil, err
+		}
+
+		return p.newCallExpression(nil, receiver, methodToken.Literal, []Expression{argument}, argument.Span().End), nil
+	case lexer.TokenString:
+		argumentToken, err := p.expect(lexer.TokenString, "expected string literal after method name")
+		if err != nil {
+			return nil, err
+		}
+
+		argument := &StringExpression{Value: argumentToken.Literal, span: tokenSpan(argumentToken)}
+		return p.newCallExpression(nil, receiver, methodToken.Literal, []Expression{argument}, argumentToken.End), nil
+	default:
+		return nil, p.errorAtCurrent("expected call arguments after method name")
+	}
+}
+
+func callStart(callee Expression, receiver Expression) lexer.Position {
+	if receiver != nil {
+		return receiver.Span().Start
+	}
+
+	return callee.Span().Start
 }
 
 func (p *Parser) parseTableConstructorExpression() (Expression, error) {
@@ -967,8 +1237,9 @@ func (p *Parser) parseTableField(arrayIndex int) (TableField, error) {
 	}
 
 	return TableField{
-		Key:   numberKey,
-		Value: value,
+		Key:         numberKey,
+		Value:       value,
+		IsListField: true,
 		span: Span{
 			Start: value.Span().Start,
 			End:   value.Span().End,

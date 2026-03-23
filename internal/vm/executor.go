@@ -4,16 +4,19 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/yunfanli-dev/aLuavmWithGo/internal/ir"
 )
 
 type executionResult struct {
 	returnValues []Value
+	breakLoop    bool
 }
 
 type executor struct {
-	scopes []map[string]*valueCell
+	scopes  []map[string]*valueCell
+	varargs []Value
 }
 
 // executeProgram evaluates the current IR subset and returns any explicit return values.
@@ -36,6 +39,10 @@ func executeProgram(state *State, program *ir.Program) (*executionResult, error)
 		}
 
 		if done {
+			if result.breakLoop {
+				return nil, fmt.Errorf("break outside loop")
+			}
+
 			return result, nil
 		}
 	}
@@ -82,14 +89,18 @@ func (e *executor) executeStatement(statement ir.Statement) (*executionResult, b
 		}
 
 		return nil, false, nil
+	case *ir.DoStatement:
+		return e.executeBlock(node.Body)
+	case *ir.BreakStatement:
+		return &executionResult{breakLoop: true}, true, nil
 	case *ir.FunctionDeclarationStatement:
-		e.assign(node.Name, e.makeUserFunctionValue(node.Name, node.Parameters, node.Body))
+		e.assign(node.Name, e.makeUserFunctionValue(node.Name, node.Parameters, node.IsVararg, node.Body))
 
 		return nil, false, nil
 	case *ir.LocalFunctionDeclarationStatement:
 		placeholder := NilValue()
 		e.defineLocal(node.Name, placeholder)
-		functionValue := e.makeUserFunctionValue(node.Name, node.Parameters, node.Body)
+		functionValue := e.makeUserFunctionValue(node.Name, node.Parameters, node.IsVararg, node.Body)
 		e.assign(node.Name, functionValue)
 
 		if userFn, ok := functionValue.Data.(*userFunction); ok {
@@ -153,6 +164,10 @@ func (e *executor) executeWhileStatement(statement *ir.WhileStatement) (*executi
 		}
 
 		if done {
+			if result.breakLoop {
+				return nil, false, nil
+			}
+
 			return result, true, nil
 		}
 	}
@@ -170,6 +185,11 @@ func (e *executor) executeRepeatStatement(statement *ir.RepeatStatement) (*execu
 			}
 
 			if done {
+				if result.breakLoop {
+					e.popScope()
+					return nil, false, nil
+				}
+
 				e.popScope()
 				return result, true, nil
 			}
@@ -235,6 +255,10 @@ func (e *executor) executeNumericForStatement(statement *ir.NumericForStatement)
 		}
 
 		if done {
+			if result.breakLoop {
+				return nil, false, nil
+			}
+
 			return result, true, nil
 		}
 
@@ -293,6 +317,10 @@ func (e *executor) executeGenericForStatement(statement *ir.GenericForStatement)
 		}
 
 		if done {
+			if result.breakLoop {
+				return nil, false, nil
+			}
+
 			return result, true, nil
 		}
 	}
@@ -335,6 +363,10 @@ func (e *executor) evaluateExpressionValues(expression ir.Expression, expandCall
 		if call, ok := expression.(*ir.CallExpression); ok {
 			return e.evaluateCallExpressionValues(call)
 		}
+
+		if _, ok := expression.(*ir.VarargExpression); ok {
+			return append([]Value(nil), e.varargs...), nil
+		}
 	}
 
 	value, err := e.evaluateExpression(expression)
@@ -359,7 +391,7 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 	case *ir.BooleanExpression:
 		return Value{Type: ValueTypeBoolean, Data: node.Value}, nil
 	case *ir.NumberExpression:
-		number, err := strconv.ParseFloat(node.Literal, 64)
+		number, err := parseNumberLiteral(node.Literal)
 		if err != nil {
 			return NilValue(), fmt.Errorf("parse number literal %q: %w", node.Literal, err)
 		}
@@ -389,22 +421,38 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 			return NilValue(), fmt.Errorf("invalid table payload %T", target.Data)
 		}
 
-		value, exists, err := tableValue.get(index)
-		if err != nil {
-			return NilValue(), err
-		}
-
-		if !exists {
-			return NilValue(), nil
-		}
-
-		return value, nil
+		return e.readTableIndex(tableValue, index)
 	case *ir.TableConstructorExpression:
 		tableValue := newTable()
-		for _, field := range node.Fields {
+		for index, field := range node.Fields {
 			key, err := e.evaluateExpression(field.Key)
 			if err != nil {
 				return NilValue(), err
+			}
+
+			if field.IsListField && index == len(node.Fields)-1 {
+				values, err := e.evaluateExpressionValues(field.Value, true)
+				if err != nil {
+					return NilValue(), err
+				}
+
+				baseIndex, err := requireNumber(key, "table constructor list field")
+				if err != nil {
+					return NilValue(), err
+				}
+
+				if len(values) == 0 {
+					values = []Value{NilValue()}
+				}
+
+				for offset, value := range values {
+					listKey := Value{Type: ValueTypeNumber, Data: baseIndex + float64(offset)}
+					if err := tableValue.set(listKey, value); err != nil {
+						return NilValue(), err
+					}
+				}
+
+				continue
 			}
 
 			value, err := e.evaluateExpression(field.Value)
@@ -419,7 +467,15 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 
 		return Value{Type: ValueTypeTable, Data: tableValue}, nil
 	case *ir.FunctionExpression:
-		return e.makeUserFunctionValue("", node.Parameters, node.Body), nil
+		return e.makeUserFunctionValue("", node.Parameters, node.IsVararg, node.Body), nil
+	case *ir.VarargExpression:
+		if len(e.varargs) == 0 {
+			return NilValue(), nil
+		}
+
+		return e.varargs[0], nil
+	case *ir.ParenthesizedExpression:
+		return e.evaluateExpression(node.Inner)
 	case *ir.UnaryExpression:
 		return e.evaluateUnaryExpression(node)
 	case *ir.BinaryExpression:
@@ -429,12 +485,13 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 	}
 }
 
-func (e *executor) makeUserFunctionValue(name string, parameters []string, body []ir.Statement) Value {
+func (e *executor) makeUserFunctionValue(name string, parameters []string, isVararg bool, body []ir.Statement) Value {
 	return Value{
 		Type: ValueTypeFunction,
 		Data: &userFunction{
 			name:       name,
 			parameters: append([]string(nil), parameters...),
+			isVararg:   isVararg,
 			body:       append([]ir.Statement(nil), body...),
 			captured:   e.snapshotVisibleCells(),
 		},
@@ -466,9 +523,108 @@ func (e *executor) assignTarget(target ir.Expression, value Value) error {
 			return fmt.Errorf("invalid table payload %T", targetValue.Data)
 		}
 
-		return tableValue.set(index, value)
+		return e.writeTableIndex(tableValue, index, value)
 	default:
 		return fmt.Errorf("unsupported assignment target %T", target)
+	}
+}
+
+// readTableIndex reads one table field and applies the minimal __index metatable fallback.
+func (e *executor) readTableIndex(tableValue *table, index Value) (Value, error) {
+	value, exists, err := tableValue.get(index)
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if exists {
+		return value, nil
+	}
+
+	metatable := tableValue.getMetatable()
+	if metatable == nil {
+		return NilValue(), nil
+	}
+
+	metaIndex, exists, err := metatable.get(Value{Type: ValueTypeString, Data: "__index"})
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if !exists {
+		return NilValue(), nil
+	}
+
+	switch metaIndex.Type {
+	case ValueTypeTable:
+		fallbackTable, ok := metaIndex.Data.(*table)
+		if !ok {
+			return NilValue(), fmt.Errorf("invalid __index table payload %T", metaIndex.Data)
+		}
+
+		return e.readTableIndex(fallbackTable, index)
+	case ValueTypeFunction:
+		returnValues, err := e.callFunctionValue(metaIndex, []Value{
+			{Type: ValueTypeTable, Data: tableValue},
+			index,
+		})
+		if err != nil {
+			return NilValue(), err
+		}
+
+		if len(returnValues) == 0 {
+			return NilValue(), nil
+		}
+
+		return returnValues[0], nil
+	default:
+		// TODO: Support additional Lua 5.1 metatable __index forms if needed.
+		return NilValue(), nil
+	}
+}
+
+// writeTableIndex writes one table field and applies the minimal __newindex metatable fallback.
+func (e *executor) writeTableIndex(tableValue *table, index Value, value Value) error {
+	_, exists, err := tableValue.get(index)
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		return tableValue.set(index, value)
+	}
+
+	metatable := tableValue.getMetatable()
+	if metatable == nil {
+		return tableValue.set(index, value)
+	}
+
+	metaNewIndex, exists, err := metatable.get(Value{Type: ValueTypeString, Data: "__newindex"})
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		return tableValue.set(index, value)
+	}
+
+	switch metaNewIndex.Type {
+	case ValueTypeTable:
+		fallbackTable, ok := metaNewIndex.Data.(*table)
+		if !ok {
+			return fmt.Errorf("invalid __newindex table payload %T", metaNewIndex.Data)
+		}
+
+		return e.writeTableIndex(fallbackTable, index, value)
+	case ValueTypeFunction:
+		_, err := e.callFunctionValue(metaNewIndex, []Value{
+			{Type: ValueTypeTable, Data: tableValue},
+			index,
+			value,
+		})
+		return err
+	default:
+		// TODO: Support additional Lua 5.1 metatable __newindex forms if needed.
+		return tableValue.set(index, value)
 	}
 }
 
@@ -486,6 +642,28 @@ func (e *executor) evaluateCallExpression(expression *ir.CallExpression) (Value,
 }
 
 func (e *executor) evaluateCallExpressionValues(expression *ir.CallExpression) ([]Value, error) {
+	if expression.Receiver != nil {
+		receiver, err := e.evaluateExpression(expression.Receiver)
+		if err != nil {
+			return nil, err
+		}
+
+		method, err := e.lookupMethod(receiver, expression.Method)
+		if err != nil {
+			return nil, err
+		}
+
+		arguments, err := e.evaluateExpressionList(expression.Arguments)
+		if err != nil {
+			return nil, err
+		}
+
+		callArgs := make([]Value, 0, len(arguments)+1)
+		callArgs = append(callArgs, receiver)
+		callArgs = append(callArgs, arguments...)
+		return e.callFunctionValue(method, callArgs)
+	}
+
 	callee, err := e.evaluateExpression(expression.Callee)
 	if err != nil {
 		return nil, err
@@ -497,6 +675,20 @@ func (e *executor) evaluateCallExpressionValues(expression *ir.CallExpression) (
 	}
 
 	return e.callFunctionValue(callee, arguments)
+}
+
+// lookupMethod resolves one method name from the current receiver value using the existing index semantics.
+func (e *executor) lookupMethod(receiver Value, method string) (Value, error) {
+	if receiver.Type != ValueTypeTable {
+		return NilValue(), fmt.Errorf("attempt to call method %q on non-table value of type %s", method, receiver.Type)
+	}
+
+	tableValue, ok := receiver.Data.(*table)
+	if !ok {
+		return NilValue(), fmt.Errorf("invalid table payload %T", receiver.Data)
+	}
+
+	return e.readTableIndex(tableValue, Value{Type: ValueTypeString, Data: method})
 }
 
 func (e *executor) pushScope() {
@@ -518,6 +710,25 @@ func (e *executor) popScope() {
 
 func (e *executor) callFunctionValue(callee Value, arguments []Value) ([]Value, error) {
 	if callee.Type != ValueTypeFunction {
+		if callee.Type == ValueTypeTable {
+			tableValue, ok := callee.Data.(*table)
+			if !ok {
+				return nil, fmt.Errorf("invalid table payload %T", callee.Data)
+			}
+
+			metaCall, exists, err := e.lookupMetamethod(callee, "__call")
+			if err != nil {
+				return nil, err
+			}
+
+			if exists {
+				callArgs := make([]Value, 0, len(arguments)+1)
+				callArgs = append(callArgs, Value{Type: ValueTypeTable, Data: tableValue})
+				callArgs = append(callArgs, arguments...)
+				return e.callFunctionValue(metaCall, callArgs)
+			}
+		}
+
 		return nil, fmt.Errorf("attempt to call non-function value of type %s", callee.Type)
 	}
 
@@ -537,11 +748,13 @@ func (e *executor) callUserFunction(functionValue *userFunction, arguments []Val
 	}
 
 	savedScopes := e.scopes
+	savedVarargs := e.varargs
 	globalScope := savedScopes[0]
 	capturedScope := copyCellMap(functionValue.captured)
 	e.scopes = []map[string]*valueCell{globalScope, capturedScope, {}}
 	defer func() {
 		e.scopes = savedScopes
+		e.varargs = savedVarargs
 	}()
 
 	for index, parameter := range functionValue.parameters {
@@ -551,6 +764,12 @@ func (e *executor) callUserFunction(functionValue *userFunction, arguments []Val
 		}
 
 		e.defineLocal(parameter, value)
+	}
+
+	if functionValue.isVararg && len(arguments) > len(functionValue.parameters) {
+		e.varargs = append([]Value(nil), arguments[len(functionValue.parameters):]...)
+	} else {
+		e.varargs = nil
 	}
 
 	for _, statement := range functionValue.body {
@@ -577,6 +796,48 @@ func (e *executor) callNativeFunction(functionValue *nativeFunction, arguments [
 	}
 
 	return functionValue.fn(arguments)
+}
+
+// lookupMetamethod resolves one supported metatable entry from the current runtime value.
+func (e *executor) lookupMetamethod(value Value, field string) (Value, bool, error) {
+	if value.Type != ValueTypeTable {
+		return NilValue(), false, nil
+	}
+
+	tableValue, ok := value.Data.(*table)
+	if !ok {
+		return NilValue(), false, fmt.Errorf("invalid table payload %T", value.Data)
+	}
+
+	metatable := tableValue.getMetatable()
+	if metatable == nil {
+		return NilValue(), false, nil
+	}
+
+	return metatable.get(Value{Type: ValueTypeString, Data: field})
+}
+
+// valueToString renders one runtime value and applies the minimal __tostring metatable hook for tables.
+func (e *executor) valueToString(value Value) (string, error) {
+	metaToString, exists, err := e.lookupMetamethod(value, "__tostring")
+	if err != nil {
+		return "", err
+	}
+
+	if exists {
+		returnValues, err := e.callFunctionValue(metaToString, []Value{value})
+		if err != nil {
+			return "", err
+		}
+
+		if len(returnValues) == 0 {
+			return "", nil
+		}
+
+		return valueToString(returnValues[0]), nil
+	}
+
+	return valueToString(value), nil
 }
 
 func (e *executor) defineLocal(name string, value Value) {
@@ -639,7 +900,7 @@ func (e *executor) evaluateUnaryExpression(expression *ir.UnaryExpression) (Valu
 	case "-":
 		number, err := requireNumber(operand, "unary '-'")
 		if err != nil {
-			return NilValue(), err
+			return e.evaluateUnaryMetamethod(operand, "__unm", err)
 		}
 
 		return Value{Type: ValueTypeNumber, Data: -number}, nil
@@ -694,34 +955,149 @@ func (e *executor) evaluateBinaryExpression(expression *ir.BinaryExpression) (Va
 
 	switch expression.Operator {
 	case "+":
-		return numericBinary(left, right, expression.Operator, func(a, b float64) float64 { return a + b })
+		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__add", func(a, b float64) float64 { return a + b })
 	case "-":
-		return numericBinary(left, right, expression.Operator, func(a, b float64) float64 { return a - b })
+		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__sub", func(a, b float64) float64 { return a - b })
 	case "*":
-		return numericBinary(left, right, expression.Operator, func(a, b float64) float64 { return a * b })
+		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__mul", func(a, b float64) float64 { return a * b })
 	case "/":
-		return numericBinary(left, right, expression.Operator, func(a, b float64) float64 { return a / b })
+		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__div", func(a, b float64) float64 { return a / b })
 	case "%":
-		return numericBinary(left, right, expression.Operator, math.Mod)
+		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__mod", math.Mod)
 	case "^":
-		return numericBinary(left, right, expression.Operator, math.Pow)
+		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__pow", math.Pow)
 	case "..":
-		return Value{Type: ValueTypeString, Data: valueToString(left) + valueToString(right)}, nil
+		if left.Type == ValueTypeString || left.Type == ValueTypeNumber || right.Type == ValueTypeString || right.Type == ValueTypeNumber {
+			return Value{Type: ValueTypeString, Data: valueToString(left) + valueToString(right)}, nil
+		}
+
+		return e.evaluateBinaryMetamethod(left, right, "__concat", fmt.Errorf("operator %q expects string-like operands, got %s and %s", expression.Operator, left.Type, right.Type))
 	case "<":
-		return comparisonBinary(left, right, expression.Operator, func(a, b float64) bool { return a < b })
+		return e.evaluateOrderedComparison(left, right, expression.Operator, "__lt", func(a, b float64) bool { return a < b })
 	case "<=":
-		return comparisonBinary(left, right, expression.Operator, func(a, b float64) bool { return a <= b })
+		return e.evaluateOrderedComparison(left, right, expression.Operator, "__le", func(a, b float64) bool { return a <= b })
 	case ">":
-		return comparisonBinary(left, right, expression.Operator, func(a, b float64) bool { return a > b })
+		return e.evaluateOrderedComparison(right, left, expression.Operator, "__lt", func(a, b float64) bool { return a < b })
 	case ">=":
-		return comparisonBinary(left, right, expression.Operator, func(a, b float64) bool { return a >= b })
+		return e.evaluateOrderedComparison(right, left, expression.Operator, "__le", func(a, b float64) bool { return a <= b })
 	case "==":
-		return Value{Type: ValueTypeBoolean, Data: valuesEqual(left, right)}, nil
+		return e.evaluateEquality(left, right)
 	case "~=":
-		return Value{Type: ValueTypeBoolean, Data: !valuesEqual(left, right)}, nil
+		value, err := e.evaluateEquality(left, right)
+		if err != nil {
+			return NilValue(), err
+		}
+
+		return Value{Type: ValueTypeBoolean, Data: !value.Data.(bool)}, nil
 	default:
 		return NilValue(), fmt.Errorf("unsupported binary operator %q", expression.Operator)
 	}
+}
+
+// evaluateUnaryMetamethod falls back to one supported unary metamethod when the direct operand type check fails.
+func (e *executor) evaluateUnaryMetamethod(operand Value, metamethod string, cause error) (Value, error) {
+	metaFn, exists, err := e.lookupMetamethod(operand, metamethod)
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if !exists {
+		return NilValue(), cause
+	}
+
+	returnValues, err := e.callFunctionValue(metaFn, []Value{operand})
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if len(returnValues) == 0 {
+		return NilValue(), nil
+	}
+
+	return returnValues[0], nil
+}
+
+// evaluateBinaryArithmetic evaluates numeric arithmetic first and falls back to one supported binary metamethod.
+func (e *executor) evaluateBinaryArithmetic(left, right Value, operator string, metamethod string, fn func(float64, float64) float64) (Value, error) {
+	value, err := numericBinary(left, right, operator, fn)
+	if err == nil {
+		return value, nil
+	}
+
+	return e.evaluateBinaryMetamethod(left, right, metamethod, err)
+}
+
+// evaluateBinaryMetamethod falls back to one supported binary metamethod using the left operand first, then the right.
+func (e *executor) evaluateBinaryMetamethod(left, right Value, metamethod string, cause error) (Value, error) {
+	metaFn, exists, err := e.lookupBinaryMetamethod(left, right, metamethod)
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if !exists {
+		if cause == nil {
+			return NilValue(), nil
+		}
+
+		return NilValue(), cause
+	}
+
+	returnValues, err := e.callFunctionValue(metaFn, []Value{left, right})
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if len(returnValues) == 0 {
+		return NilValue(), nil
+	}
+
+	return returnValues[0], nil
+}
+
+// evaluateOrderedComparison evaluates numeric ordering first and falls back to one supported comparison metamethod.
+func (e *executor) evaluateOrderedComparison(left, right Value, operator string, metamethod string, fn func(float64, float64) bool) (Value, error) {
+	value, err := comparisonBinary(left, right, operator, fn)
+	if err == nil {
+		return value, nil
+	}
+
+	return e.evaluateBinaryMetamethod(left, right, metamethod, err)
+}
+
+// evaluateEquality applies raw equality first, then falls back to the minimal __eq metamethod path for tables.
+func (e *executor) evaluateEquality(left, right Value) (Value, error) {
+	if valuesEqual(left, right) {
+		return Value{Type: ValueTypeBoolean, Data: true}, nil
+	}
+
+	if left.Type != right.Type || left.Type != ValueTypeTable {
+		return Value{Type: ValueTypeBoolean, Data: false}, nil
+	}
+
+	value, err := e.evaluateBinaryMetamethod(left, right, "__eq", nil)
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if value.Type == ValueTypeNil {
+		return Value{Type: ValueTypeBoolean, Data: false}, nil
+	}
+
+	return Value{Type: ValueTypeBoolean, Data: isTruthy(value)}, nil
+}
+
+// lookupBinaryMetamethod checks the left then right operand for one supported binary metamethod entry.
+func (e *executor) lookupBinaryMetamethod(left, right Value, field string) (Value, bool, error) {
+	metaFn, exists, err := e.lookupMetamethod(left, field)
+	if err != nil {
+		return NilValue(), false, err
+	}
+
+	if exists {
+		return metaFn, true, nil
+	}
+
+	return e.lookupMetamethod(right, field)
 }
 
 func numericBinary(left, right Value, operator string, fn func(float64, float64) float64) (Value, error) {
@@ -772,6 +1148,19 @@ func requireNumber(value Value, operator string) (float64, error) {
 	}
 
 	return number, nil
+}
+
+func parseNumberLiteral(literal string) (float64, error) {
+	if strings.HasPrefix(literal, "0x") || strings.HasPrefix(literal, "0X") {
+		number, err := strconv.ParseUint(literal[2:], 16, 64)
+		if err != nil {
+			return 0, err
+		}
+
+		return float64(number), nil
+	}
+
+	return strconv.ParseFloat(literal, 64)
 }
 
 func isTruthy(value Value) bool {

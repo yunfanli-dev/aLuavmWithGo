@@ -127,10 +127,15 @@ func (s *State) registerNativeFunction(name string, function *nativeFunction) er
 }
 
 func (s *State) registerBuiltinPrint() {
-	_ = s.RegisterFunction("print", func(args []Value) ([]Value, error) {
+	_ = s.registerContextualFunction("print", func(exec *executor, args []Value) ([]Value, error) {
 		parts := make([]string, 0, len(args))
 		for _, arg := range args {
-			parts = append(parts, valueToString(arg))
+			text, err := exec.valueToString(arg)
+			if err != nil {
+				return nil, err
+			}
+
+			parts = append(parts, text)
 		}
 
 		if _, err := fmt.Fprintln(s.output, strings.Join(parts, "\t")); err != nil {

@@ -25,15 +25,30 @@
 - Lua 5.1 子集的基础错误处理与 protected call
 - Lua 5.1 子集的 `repeat-until` 与数值 `for`
 - Lua 5.1 子集的 generic `for` 与 `pairs` / `ipairs` / `next`
+- Lua 5.1 子集的最小 metatable 读写行为
+- Lua 5.1 子集的 `__tostring`、`__call`、`rawget`、`rawset`
+- Lua 5.1 子集的基础算术与拼接元方法
+- Lua 5.1 子集的基础比较元方法
+- Lua 5.1 子集的 `__metatable` 保护行为
+- Lua 5.1 子集的 `do ... end` 与 `break`
+- Lua 5.1 子集的基础 `vararg`
+- Lua 5.1 子集的 table 构造器最后数组字段多返回值展开
+- Lua 5.1 子集的圆括号单值语义
+- Lua 5.1 子集的基础方法定义与方法调用语法
+- Lua 5.1 子集的 table / string 调用语法糖
+- Lua 5.1 子集的指数形式数字字面量
+- Lua 5.1 子集的十六进制数字字面量
+- Lua 5.1 子集的 long string / long comment
 
 ## 备注
 
-- 当前 lexer 已支持基础关键字、标识符、数字、字符串、短注释和常用运算符；长注释、长字符串、十六进制和指数数字仍待补齐。
-- 当前 parser 已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、函数声明、table 构造、匿名函数与基础表达式；`break`、`do ... end`、泛型语法的更完整子集仍待补齐。
-- 当前已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、函数调用、table 读写、闭包基础能力和基础一元/二元表达式的执行；metatable、完整多返回值语义和更多 Lua 5.1 细节仍待补齐。
+- 当前 lexer 已支持基础关键字、标识符、十进制、指数形式和十六进制数字、短字符串、long bracket 字符串与注释、短注释和常用运算符；更完整的 Lua 词法细节仍待补齐。
+- 当前 parser 已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数声明、方法定义、table 构造、匿名函数、普通调用、方法调用以及 `fn{...}` / `fn"..."` 这类调用语法糖，并会拒绝非法作用域中的 `...`；更多 Lua 5.1 语法仍待补齐。
+- 当前已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数调用、方法调用、table / string 调用语法糖、table 读写、闭包基础能力和基础一元/二元表达式的执行；完整多返回值语义和更多 Lua 5.1 细节仍待补齐。
 - 当前已支持 Go 宿主向 Lua 注册基础函数，并内置最小 `print`；标准库仍远未完整。
 - 当前已内置 `print`、`type`、`tostring`、`tonumber`、`assert`、`error`、`pcall`、`next`、`pairs`、`ipairs`；这仍只是较小的基础内建子集。
-- 当前已支持 `error`、`pcall`，并支持最后一个函数调用在返回列表中的多返回值展开；更完整的 Lua 多返回值规则仍未全部覆盖。
-- 当前已支持 `{}`、键值字段、`t[k]`、`t.name` 的最小读写；数组长度语义、metatable 和完整 table 行为仍未实现。
+- 当前已支持 `error`、`pcall`、基础 `vararg`，并支持最后一个函数调用或 `...` 在返回列表中的多返回值展开、table 构造器最后一个数组字段的展开，以及圆括号抑制展开的单值语义；更完整的 Lua 多返回值规则仍未全部覆盖。
+- 当前回归测试已覆盖多返回值在返回列表、赋值、空 `vararg`、`vararg` 赋值、函数实参列表、`vararg` 实参列表、方法调用、`pcall` 成功/失败路径，以及 table 构造器最后数组字段中的常见调整规则；更完整的 Lua 多返回值边界仍未全部覆盖。
+- 当前已支持 `{}`、键值字段、`t[k]`、`t.name` 的最小读写，以及基础 `setmetatable` / `getmetatable`、`__metatable` 保护、`__index` / `__newindex`、`__tostring`、`__call`、`rawget`、`rawset`、`__add`、`__sub`、`__mul`、`__div`、`__mod`、`__pow`、`__unm`、`__concat`、`__eq`、`__lt`、`__le`；完整 table 行为仍未实现。
 - 当前已支持 `local function`、匿名函数表达式和基础 upvalue 读写；闭包仍未覆盖完整 Lua 5.1 upvalue 语义。
 - 当前 generic `for` 主要面向 `pairs` / `ipairs` / `next` 这一最小可用链路；更完整的迭代器兼容性仍待补齐。

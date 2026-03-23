@@ -63,6 +63,12 @@ func (s *Scanner) NextToken() (Token, error) {
 	switch ch {
 	case '\'', '"':
 		return s.scanString()
+	case '[':
+		if s.peekNext() == '[' || s.peekNext() == '=' {
+			return s.scanLongString()
+		}
+
+		return s.singleToken(TokenLeftBracket), nil
 	case '=':
 		return s.scanFixedOrDouble(TokenAssign, TokenEqual, '=')
 	case '~':
@@ -93,8 +99,6 @@ func (s *Scanner) NextToken() (Token, error) {
 		return s.singleToken(TokenLeftBrace), nil
 	case '}':
 		return s.singleToken(TokenRightBrace), nil
-	case '[':
-		return s.singleToken(TokenLeftBracket), nil
 	case ']':
 		return s.singleToken(TokenRightBracket), nil
 	case ';':
@@ -136,6 +140,10 @@ func (s *Scanner) scanIdentifier() (Token, error) {
 
 func (s *Scanner) scanNumber() (Token, error) {
 	start := s.position()
+	if s.peekNext() == 'x' || s.peekNext() == 'X' {
+		return s.scanHexNumber(start)
+	}
+
 	literal := s.consumeWhile(func(ch rune) bool {
 		return isDigit(ch)
 	})
@@ -152,13 +160,71 @@ func (s *Scanner) scanNumber() (Token, error) {
 		}
 	}
 
-	// TODO: Extend number scanning with Lua 5.1 exponent and hexadecimal literal support.
+	exponent, err := s.scanExponentPart(start)
+	if err != nil {
+		return Token{}, err
+	}
+
+	literal += exponent
+
+	// TODO: Extend number scanning with Lua 5.1 hexadecimal literal support.
 	return Token{
 		Type:    TokenNumber,
 		Literal: literal,
 		Start:   start,
 		End:     s.position(),
 	}, nil
+}
+
+// scanHexNumber parses Lua 5.1 integer hexadecimal literals like `0xff`.
+func (s *Scanner) scanHexNumber(start Position) (Token, error) {
+	literal := s.consumeWhile(func(ch rune) bool {
+		return isDigit(ch)
+	})
+
+	marker, _ := s.advance()
+	literal += string(marker)
+
+	if next, ok := s.peek(); !ok || !isHexDigit(next) {
+		return Token{}, s.errorAt(start, "malformed hexadecimal literal")
+	}
+
+	literal += s.consumeWhile(func(ch rune) bool {
+		return isHexDigit(ch)
+	})
+
+	return Token{
+		Type:    TokenNumber,
+		Literal: literal,
+		Start:   start,
+		End:     s.position(),
+	}, nil
+}
+
+// scanExponentPart parses the optional exponent suffix in Lua decimal literals like `1e3` or `1.5e-2`.
+func (s *Scanner) scanExponentPart(start Position) (string, error) {
+	ch, ok := s.peek()
+	if !ok || (ch != 'e' && ch != 'E') {
+		return "", nil
+	}
+
+	s.advance()
+	literal := string(ch)
+
+	if sign, ok := s.peek(); ok && (sign == '+' || sign == '-') {
+		s.advance()
+		literal += string(sign)
+	}
+
+	if next, ok := s.peek(); !ok || !isDigit(next) {
+		return "", s.errorAt(start, "malformed exponent literal")
+	}
+
+	literal += s.consumeWhile(func(ch rune) bool {
+		return isDigit(ch)
+	})
+
+	return literal, nil
 }
 
 func (s *Scanner) scanString() (Token, error) {
@@ -197,6 +263,27 @@ func (s *Scanner) scanString() (Token, error) {
 
 		value = append(value, ch)
 	}
+}
+
+// scanLongString parses Lua 5.1 long-bracket strings like `[[...]]` and `[=[...]=]`.
+func (s *Scanner) scanLongString() (Token, error) {
+	start := s.position()
+	level, err := s.expectLongBracketStart(start)
+	if err != nil {
+		return Token{}, err
+	}
+
+	value, end, err := s.scanLongBracketBody(start, level)
+	if err != nil {
+		return Token{}, err
+	}
+
+	return Token{
+		Type:    TokenString,
+		Literal: value,
+		Start:   start,
+		End:     end,
+	}, nil
 }
 
 func (s *Scanner) scanEscape(start Position) (rune, error) {
@@ -303,8 +390,16 @@ func (s *Scanner) skipWhitespaceAndComments() error {
 			s.advance()
 
 			next, ok := s.peek()
-			if ok && next == '[' && s.peekNextN(1) == '[' {
-				return s.errorAt(s.position(), "long comments are not implemented yet")
+			if ok && next == '[' {
+				commentStart := s.position()
+				level, err := s.expectLongBracketStart(commentStart)
+				if err == nil {
+					if _, _, err := s.scanLongBracketBody(commentStart, level); err != nil {
+						return err
+					}
+
+					continue
+				}
 			}
 
 			for {
@@ -321,6 +416,75 @@ func (s *Scanner) skipWhitespaceAndComments() error {
 
 		return nil
 	}
+}
+
+func (s *Scanner) expectLongBracketStart(start Position) (int, error) {
+	if !s.match('[') {
+		return 0, s.errorAt(start, "expected long bracket start")
+	}
+
+	level := 0
+	for s.match('=') {
+		level++
+	}
+
+	if !s.match('[') {
+		return 0, s.errorAt(start, "expected long bracket start")
+	}
+
+	if ch, ok := s.peek(); ok && ch == '\n' {
+		s.advance()
+	}
+
+	return level, nil
+}
+
+func (s *Scanner) scanLongBracketBody(start Position, level int) (string, Position, error) {
+	value := make([]rune, 0)
+	for {
+		ch, ok := s.peek()
+		if !ok {
+			return "", Position{}, s.errorAt(start, "unterminated long string")
+		}
+
+		if ch == ']' {
+			matched, end := s.matchLongBracketClose(level)
+			if matched {
+				return string(value), end, nil
+			}
+		}
+
+		s.advance()
+		value = append(value, ch)
+	}
+}
+
+func (s *Scanner) matchLongBracketClose(level int) (bool, Position) {
+	startIndex := s.index
+	startLine := s.line
+	startColumn := s.column
+
+	if !s.match(']') {
+		return false, Position{}
+	}
+
+	for index := 0; index < level; index++ {
+		if !s.match('=') {
+			s.index = startIndex
+			s.line = startLine
+			s.column = startColumn
+			return false, Position{}
+		}
+	}
+
+	if !s.match(']') {
+		s.index = startIndex
+		s.line = startLine
+		s.column = startColumn
+		return false, Position{}
+	}
+
+	return true, s.position()
 }
 
 func (s *Scanner) consumeWhile(fn func(rune) bool) string {
@@ -419,4 +583,8 @@ func isIdentifierPart(ch rune) bool {
 
 func isDigit(ch rune) bool {
 	return ch >= '0' && ch <= '9'
+}
+
+func isHexDigit(ch rune) bool {
+	return isDigit(ch) || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
