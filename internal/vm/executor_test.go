@@ -1,6 +1,9 @@
 package vm
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestExecStringEvaluatesArithmeticAndReturn(t *testing.T) {
 	state := NewState()
@@ -118,6 +121,138 @@ func TestExecStringEvaluatesBooleanLogic(t *testing.T) {
 
 	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesMathLibrary(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`return math.abs(-3), math.floor(2.9), math.ceil(2.1), math.max(1, 7, 3), math.min(1, 7, 3), math.sqrt(9), math.pow(2, 5), math.log(math.exp(1)), math.sin(0), math.cos(0)`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 10 {
+		t.Fatalf("expected 10 return values, got %d", len(returnValues))
+	}
+
+	expected := []float64{3, 2, 3, 7, 1, 3, 32}
+	for index, want := range expected[:7] {
+		if returnValues[index].Type != ValueTypeNumber || returnValues[index].Data != want {
+			t.Fatalf("unexpected math return value at %d: %#v", index, returnValues[index])
+		}
+	}
+
+	approximate := []struct {
+		index int
+		want  float64
+	}{
+		{index: 7, want: 1},
+		{index: 8, want: 0},
+		{index: 9, want: 1},
+	}
+	for _, entry := range approximate {
+		value := returnValues[entry.index]
+		number, ok := value.Data.(float64)
+		if value.Type != ValueTypeNumber || !ok || math.Abs(number-entry.want) > 1e-9 {
+			t.Fatalf("unexpected approximate math return value at %d: %#v", entry.index, value)
+		}
+	}
+}
+
+func TestExecStringEvaluatesMathRandomAndSeed(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+math.randomseed(7)
+local a = math.random()
+local b = math.random(5)
+local c = math.random(3, 7)
+math.randomseed(7)
+return a, b, c, math.random(), math.random(5), math.random(3, 7)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 6 {
+		t.Fatalf("expected 6 return values, got %d", len(returnValues))
+	}
+
+	for _, index := range []int{0, 3} {
+		value := returnValues[index]
+		number, ok := value.Data.(float64)
+		if value.Type != ValueTypeNumber || !ok || number < 0 || number >= 1 {
+			t.Fatalf("unexpected math.random float value at %d: %#v", index, value)
+		}
+	}
+
+	if returnValues[1] != returnValues[4] {
+		t.Fatalf("expected reseeded bounded random values to match: %#v vs %#v", returnValues[1], returnValues[4])
+	}
+
+	if returnValues[2] != returnValues[5] {
+		t.Fatalf("expected reseeded ranged random values to match: %#v vs %#v", returnValues[2], returnValues[5])
+	}
+
+	for _, index := range []int{1, 4} {
+		if returnValues[index].Type != ValueTypeNumber {
+			t.Fatalf("unexpected math.random bounded value at %d: %#v", index, returnValues[index])
+		}
+		number := returnValues[index].Data.(float64)
+		if number < 1 || number > 5 {
+			t.Fatalf("out-of-range math.random bounded value at %d: %#v", index, returnValues[index])
+		}
+	}
+
+	for _, index := range []int{2, 5} {
+		if returnValues[index].Type != ValueTypeNumber {
+			t.Fatalf("unexpected math.random ranged value at %d: %#v", index, returnValues[index])
+		}
+		number := returnValues[index].Data.(float64)
+		if number < 3 || number > 7 {
+			t.Fatalf("out-of-range math.random ranged value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
+func TestExecStringEvaluatesStringLibrary(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local b1, b2, b3 = string.byte("ABC", 1, 3)
+return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.sub("abcdef", 2, 4), string.sub("abcdef", -3, -1), string.rep("ha", 3), string.reverse("stressed"), string.byte("ABC", 2), b1, b2, b3, string.char(65, 66, 67)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 12 {
+		t.Fatalf("expected 12 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(4) {
+		t.Fatalf("unexpected string.len return value: %#v", returnValues[0])
+	}
+
+	expected := []string{"abcd", "ABCD", "bcd", "def", "hahaha", "desserts"}
+	for index, want := range expected {
+		value := returnValues[index+1]
+		if value.Type != ValueTypeString || value.Data != want {
+			t.Fatalf("unexpected string return value at %d: %#v", index+1, value)
+		}
+	}
+
+	expectedNumbers := []float64{66, 65, 66, 67}
+	for index, want := range expectedNumbers {
+		value := returnValues[index+7]
+		if value.Type != ValueTypeNumber || value.Data != want {
+			t.Fatalf("unexpected string.byte return value at %d: %#v", index+7, value)
+		}
+	}
+
+	if returnValues[11].Type != ValueTypeString || returnValues[11].Data != "ABC" {
+		t.Fatalf("unexpected string.char return value: %#v", returnValues[11])
 	}
 }
 
@@ -952,6 +1087,161 @@ return rawget(target, "answer"), target.answer
 	}
 }
 
+func TestExecStringEvaluatesRawEqual(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local lhs = {}
+local rhs = {}
+setmetatable(lhs, {
+	__eq = function(_, _)
+		return true
+	end
+})
+setmetatable(rhs, getmetatable(lhs))
+local alias = lhs
+return lhs == rhs, rawequal(lhs, rhs), rawequal(lhs, alias), rawequal(1, 1), rawequal(1, 2)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 5 {
+		t.Fatalf("expected 5 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected metamethod equality result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != false {
+		t.Fatalf("unexpected raw table equality result: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeBoolean || returnValues[2].Data != true {
+		t.Fatalf("unexpected raw alias equality result: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeBoolean || returnValues[3].Data != true {
+		t.Fatalf("unexpected raw numeric equality result: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeBoolean || returnValues[4].Data != false {
+		t.Fatalf("unexpected raw numeric inequality result: %#v", returnValues[4])
+	}
+}
+
+func TestExecStringEvaluatesTableInsertAndRemove(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local values = { 1, 3 }
+table.insert(values, 2)
+table.insert(values, 2, 9)
+local removed_mid = table.remove(values, 2)
+local removed_last = table.remove(values)
+return values[1], values[2], values[3], values[4], removed_mid, removed_last
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 6 {
+		t.Fatalf("expected 6 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(1) || returnValues[1].Data != float64(3) || returnValues[2].Type != ValueTypeNil || returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("unexpected table contents after insert/remove: %#v", returnValues[:4])
+	}
+
+	if returnValues[4].Data != float64(9) || returnValues[5].Data != float64(2) {
+		t.Fatalf("unexpected removed values: %#v", returnValues[4:6])
+	}
+}
+
+func TestExecStringEvaluatesTableRemoveOnEmptySequence(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local values = {}
+return table.remove(values)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected nil from empty table.remove, got %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesTableConcat(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local values = { "a", "b", "c", 4 }
+return table.concat(values), table.concat(values, "-"), table.concat(values, "-", 2, 3), table.concat(values, "-", 5, 4)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "abc4" {
+		t.Fatalf("unexpected default concat value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "a-b-c-4" {
+		t.Fatalf("unexpected separated concat value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "b-c" {
+		t.Fatalf("unexpected sliced concat value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "" {
+		t.Fatalf("unexpected empty-range concat value: %#v", returnValues[3])
+	}
+}
+
+func TestExecStringEvaluatesTableSort(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local ascending = { 3, 1, 2 }
+table.sort(ascending)
+
+local descending = { 3, 1, 2 }
+table.sort(descending, function(a, b)
+	return a > b
+end)
+
+return table.concat(ascending, ","), table.concat(descending, ",")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "1,2,3" {
+		t.Fatalf("unexpected ascending sort value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "3,2,1" {
+		t.Fatalf("unexpected descending sort value: %#v", returnValues[1])
+	}
+}
+
 func TestExecStringEvaluatesLocalFunction(t *testing.T) {
 	state := NewState()
 
@@ -1068,6 +1358,88 @@ func TestExecStringEvaluatesBuiltinToNumber(t *testing.T) {
 
 	if returnValues[1].Type != ValueTypeNil {
 		t.Fatalf("expected second return value to be nil, got %#v", returnValues[1])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinSelect(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function capture(...)
+	local a = select("#", ...)
+	local b, c = select(2, ...)
+	local d = select(-1, ...)
+	return a, b, c, d
+end
+return capture(4, 5, 6)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(3) {
+		t.Fatalf("unexpected count result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Data != float64(5) || returnValues[2].Data != float64(6) {
+		t.Fatalf("unexpected select(2, ...) values: %#v", returnValues[1:3])
+	}
+
+	if returnValues[3].Data != float64(6) {
+		t.Fatalf("unexpected select(-1, ...) value: %#v", returnValues[3])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinUnpack(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local values = { 10, 20, 30, 40 }
+local a, b, c, d = unpack(values)
+local e, f = unpack(values, 2, 3)
+local g, h = unpack(values, 5, 4)
+return a, b, c, d, e, f, g, h
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 8 {
+		t.Fatalf("expected 8 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(10) || returnValues[1].Data != float64(20) || returnValues[2].Data != float64(30) || returnValues[3].Data != float64(40) {
+		t.Fatalf("unexpected unpack(values) values: %#v", returnValues[:4])
+	}
+
+	if returnValues[4].Data != float64(20) || returnValues[5].Data != float64(30) {
+		t.Fatalf("unexpected unpack(values, 2, 3) values: %#v", returnValues[4:6])
+	}
+
+	if returnValues[6].Type != ValueTypeNil || returnValues[7].Type != ValueTypeNil {
+		t.Fatalf("unexpected unpack(values, 5, 4) values: %#v", returnValues[6:8])
+	}
+}
+
+func TestExecStringBuiltinSelectRejectsZeroIndex(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+function capture(...)
+	return select(0, ...)
+end
+return capture(1, 2)
+`)
+	if err == nil {
+		t.Fatal("expected select index error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": select index out of range` {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1690,6 +2062,93 @@ func TestExecStringEvaluatesBuiltinPCallFailure(t *testing.T) {
 	}
 
 	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "boom" {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinXPCallSuccess(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function pair()
+	return 7, 8
+end
+function handler(err)
+	return "wrapped:" .. err
+end
+return xpcall(pair, handler)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Data != float64(7) || returnValues[2].Data != float64(8) {
+		t.Fatalf("unexpected xpcall success values: %#v", returnValues[1:])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinXPCallFailure(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function fail()
+	error("boom")
+end
+function handler(err)
+	return "wrapped:" .. err
+end
+return xpcall(fail, handler)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != false {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != `wrapped:boom` {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinXPCallHandlerFailure(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function fail()
+	error("boom")
+end
+function bad_handler(err)
+	error("handler:" .. err)
+end
+return xpcall(fail, bad_handler)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != false {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != `handler:boom` {
 		t.Fatalf("unexpected second return value: %#v", returnValues[1])
 	}
 }

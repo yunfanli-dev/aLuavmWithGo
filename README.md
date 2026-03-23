@@ -43,3 +43,10 @@
 - 基础内建函数与最小 generic `for` 迭代能力
 
 当前仍在持续补齐 Lua 5.1 子集的剩余差距，例如更完整的 metatable 语义、多返回值规则、更多标准库与更完整语法。
+
+## 样例脚本
+
+仓库当前提供可直接运行的手工验证样例，见 [examples/README.md](./examples/README.md)。
+
+- `examples/runtime_showcase.lua`：覆盖运行时和标准库主链路
+- `examples/multivalue_showcase.lua`：覆盖多返回值和 `pcall` 链路

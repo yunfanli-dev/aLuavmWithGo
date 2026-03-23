@@ -3,6 +3,7 @@ package vm
 import (
 	"fmt"
 	"io"
+	"math/rand"
 	"strings"
 )
 
@@ -11,6 +12,7 @@ type State struct {
 	stack        *Stack
 	globals      map[string]*valueCell
 	output       io.Writer
+	random       *rand.Rand
 	lastProgram  *FrontendResult
 	lastReturned []Value
 }
@@ -21,6 +23,7 @@ func NewState() *State {
 		stack:   NewStack(),
 		globals: make(map[string]*valueCell),
 		output:  io.Discard,
+		random:  rand.New(rand.NewSource(1)),
 	}
 
 	state.registerBuiltins()
