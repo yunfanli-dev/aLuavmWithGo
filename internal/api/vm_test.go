@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,5 +82,40 @@ func TestExecStringExecutesCompiledSource(t *testing.T) {
 
 	if returnValues[0].Type != "number" || returnValues[0].Data != float64(1) {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestRegisterFunctionExposesGoHandler(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterFunction("double", func(args []Value) ([]Value, error) {
+		number := args[0].Data.(float64)
+		return []Value{{Type: "number", Data: number * 2}}, nil
+	})
+	if err != nil {
+		t.Fatalf("register function: %v", err)
+	}
+
+	if err := vm.ExecString("return double(5)"); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 1 || returnValues[0].Data != float64(10) {
+		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
+func TestBuiltinPrintWritesToConfiguredOutput(t *testing.T) {
+	vm := NewVM()
+	var output bytes.Buffer
+	vm.SetOutput(&output)
+
+	if err := vm.ExecString("print(\"hello\", 42)"); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	if output.String() != "hello\t42\n" {
+		t.Fatalf("unexpected print output %q", output.String())
 	}
 }

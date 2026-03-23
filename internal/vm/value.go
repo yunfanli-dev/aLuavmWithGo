@@ -14,6 +14,8 @@ const (
 	ValueTypeNumber ValueType = "number"
 	// ValueTypeString represents a Lua string.
 	ValueTypeString ValueType = "string"
+	// ValueTypeFunction represents a Lua function.
+	ValueTypeFunction ValueType = "function"
 )
 
 // Value is the unified runtime container used by the VM stack and future instructions.

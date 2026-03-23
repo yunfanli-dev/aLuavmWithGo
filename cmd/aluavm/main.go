@@ -9,6 +9,7 @@ import (
 
 func main() {
 	vm := api.NewVM()
+	vm.SetOutput(os.Stdout)
 
 	if err := run(vm, os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "aluavm bootstrap failed: %v\n", err)

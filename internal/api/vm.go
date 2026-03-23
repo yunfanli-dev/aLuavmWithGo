@@ -1,6 +1,10 @@
 package api
 
-import "github.com/yunfanli-dev/aLuavmWithGo/internal/vm"
+import (
+	"io"
+
+	"github.com/yunfanli-dev/aLuavmWithGo/internal/vm"
+)
 
 // VM is the high-level entry point used by Go hosts to interact with the Lua runtime.
 type VM struct {
@@ -35,4 +39,16 @@ func (v *VM) ExecFile(path string) error {
 	}
 
 	return v.ExecSource(source)
+}
+
+// RegisterFunction exposes a Go host function to the Lua global environment.
+func (v *VM) RegisterFunction(name string, fn func(args []Value) ([]Value, error)) error {
+	return v.state.RegisterFunction(name, func(args []vm.Value) ([]vm.Value, error) {
+		return fn(args)
+	})
+}
+
+// SetOutput changes the writer used by builtin output functions like print.
+func (v *VM) SetOutput(writer io.Writer) {
+	v.state.SetOutput(writer)
 }

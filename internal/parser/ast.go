@@ -32,11 +32,53 @@ type Chunk struct {
 	span       Span
 }
 
+// CallStatement represents a function call used as a statement.
+type CallStatement struct {
+	Call *CallExpression
+	span Span
+}
+
+// AssignStatement represents `name = expr` and `a, b = ...`.
+type AssignStatement struct {
+	Names  []Identifier
+	Values []Expression
+	span   Span
+}
+
+// FunctionDeclarationStatement represents `function name(args) ... end`.
+type FunctionDeclarationStatement struct {
+	Name       Identifier
+	Parameters []Identifier
+	Body       []Statement
+	span       Span
+}
+
 // LocalAssignStatement represents `local name = expr` and `local a, b = ...`.
 type LocalAssignStatement struct {
 	Names  []Identifier
 	Values []Expression
 	span   Span
+}
+
+// IfClause represents one condition/body branch of an if statement.
+type IfClause struct {
+	Condition Expression
+	Body      []Statement
+	span      Span
+}
+
+// IfStatement represents `if` / `elseif` / `else`.
+type IfStatement struct {
+	Clauses  []IfClause
+	ElseBody []Statement
+	span     Span
+}
+
+// WhileStatement represents a Lua `while` loop.
+type WhileStatement struct {
+	Condition Expression
+	Body      []Statement
+	span      Span
 }
 
 // ReturnStatement represents a Lua `return` statement.
@@ -49,6 +91,13 @@ type ReturnStatement struct {
 type Identifier struct {
 	Name string
 	span Span
+}
+
+// CallExpression represents `callee(args)`.
+type CallExpression struct {
+	Callee    Expression
+	Arguments []Expression
+	span      Span
 }
 
 // NilExpression represents the Lua `nil` literal.
@@ -89,21 +138,33 @@ type BinaryExpression struct {
 	span     Span
 }
 
-func (*Chunk) node()                {}
-func (*LocalAssignStatement) node() {}
-func (*ReturnStatement) node()      {}
-func (*Identifier) node()           {}
-func (*NilExpression) node()        {}
-func (*BooleanExpression) node()    {}
-func (*NumberExpression) node()     {}
-func (*StringExpression) node()     {}
-func (*UnaryExpression) node()      {}
-func (*BinaryExpression) node()     {}
+func (*Chunk) node()                        {}
+func (*CallStatement) node()                {}
+func (*AssignStatement) node()              {}
+func (*FunctionDeclarationStatement) node() {}
+func (*LocalAssignStatement) node()         {}
+func (*IfStatement) node()                  {}
+func (*WhileStatement) node()               {}
+func (*ReturnStatement) node()              {}
+func (*Identifier) node()                   {}
+func (*CallExpression) node()               {}
+func (*NilExpression) node()                {}
+func (*BooleanExpression) node()            {}
+func (*NumberExpression) node()             {}
+func (*StringExpression) node()             {}
+func (*UnaryExpression) node()              {}
+func (*BinaryExpression) node()             {}
 
-func (*LocalAssignStatement) statement() {}
-func (*ReturnStatement) statement()      {}
+func (*CallStatement) statement()                {}
+func (*AssignStatement) statement()              {}
+func (*FunctionDeclarationStatement) statement() {}
+func (*LocalAssignStatement) statement()         {}
+func (*IfStatement) statement()                  {}
+func (*WhileStatement) statement()               {}
+func (*ReturnStatement) statement()              {}
 
 func (*Identifier) expression()        {}
+func (*CallExpression) expression()    {}
 func (*NilExpression) expression()     {}
 func (*BooleanExpression) expression() {}
 func (*NumberExpression) expression()  {}
@@ -114,14 +175,35 @@ func (*BinaryExpression) expression()  {}
 // Span reports the source range for a chunk node.
 func (c *Chunk) Span() Span { return c.span }
 
+// Span reports the source range for a call statement.
+func (s *CallStatement) Span() Span { return s.span }
+
+// Span reports the source range for an assignment statement.
+func (s *AssignStatement) Span() Span { return s.span }
+
+// Span reports the source range for a function declaration statement.
+func (s *FunctionDeclarationStatement) Span() Span { return s.span }
+
 // Span reports the source range for a local assignment statement.
 func (s *LocalAssignStatement) Span() Span { return s.span }
+
+// Span reports the source range for an if clause.
+func (c *IfClause) Span() Span { return c.span }
+
+// Span reports the source range for an if statement.
+func (s *IfStatement) Span() Span { return s.span }
+
+// Span reports the source range for a while statement.
+func (s *WhileStatement) Span() Span { return s.span }
 
 // Span reports the source range for a return statement.
 func (s *ReturnStatement) Span() Span { return s.span }
 
 // Span reports the source range for an identifier expression.
 func (e *Identifier) Span() Span { return e.span }
+
+// Span reports the source range for a call expression.
+func (e *CallExpression) Span() Span { return e.span }
 
 // Span reports the source range for a nil expression.
 func (e *NilExpression) Span() Span { return e.span }

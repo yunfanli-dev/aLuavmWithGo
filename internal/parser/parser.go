@@ -39,20 +39,16 @@ func New(sourceName string, tokens []lexer.Token) *Parser {
 
 // ParseChunk parses the root chunk node from the current token stream.
 func (p *Parser) ParseChunk() (*Chunk, error) {
-	statements := make([]Statement, 0)
-	start := p.current().Start
-
-	for !p.check(lexer.TokenEOF) {
-		statement, err := p.parseStatement()
-		if err != nil {
-			return nil, err
-		}
-
-		statements = append(statements, statement)
-		p.match(lexer.TokenSemicolon)
+	statements, end, err := p.parseBlock(lexer.TokenEOF)
+	if err != nil {
+		return nil, err
 	}
 
-	end := p.current().End
+	start := p.current().Start
+	if len(statements) > 0 {
+		start = statements[0].Span().Start
+	}
+
 	return &Chunk{
 		Statements: statements,
 		span: Span{
@@ -62,16 +58,154 @@ func (p *Parser) ParseChunk() (*Chunk, error) {
 	}, nil
 }
 
+func (p *Parser) parseBlock(terminators ...lexer.TokenType) ([]Statement, lexer.Position, error) {
+	statements := make([]Statement, 0)
+	for !p.check(terminators...) {
+		statement, err := p.parseStatement()
+		if err != nil {
+			return nil, lexer.Position{}, err
+		}
+
+		statements = append(statements, statement)
+		p.match(lexer.TokenSemicolon)
+	}
+
+	return statements, p.current().End, nil
+}
+
 func (p *Parser) parseStatement() (Statement, error) {
 	switch p.current().Type {
+	case lexer.TokenFunction:
+		return p.parseFunctionDeclarationStatement()
+	case lexer.TokenIdentifier:
+		return p.parseIdentifierLedStatement()
 	case lexer.TokenLocal:
 		return p.parseLocalAssignStatement()
+	case lexer.TokenIf:
+		return p.parseIfStatement()
+	case lexer.TokenWhile:
+		return p.parseWhileStatement()
 	case lexer.TokenReturn:
 		return p.parseReturnStatement()
 	default:
-		// TODO: Extend statement parsing with Lua 5.1 subset forms like assignment, if, while, and function declarations.
+		// TODO: Extend statement parsing with Lua 5.1 subset forms like function declarations and repeat loops.
 		return nil, p.errorAtCurrent(fmt.Sprintf("unsupported statement starting with %q", p.current().Type))
 	}
+}
+
+func (p *Parser) parseIdentifierLedStatement() (Statement, error) {
+	if p.isAssignmentStatement() {
+		return p.parseAssignStatement()
+	}
+
+	expression, err := p.parsePrefixExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	call, ok := expression.(*CallExpression)
+	if !ok {
+		return nil, p.errorAtCurrent("only assignment and function call statements are supported after identifier")
+	}
+
+	return &CallStatement{
+		Call: call,
+		span: call.Span(),
+	}, nil
+}
+
+func (p *Parser) parseAssignStatement() (Statement, error) {
+	firstName, err := p.expect(lexer.TokenIdentifier, "expected assignment target")
+	if err != nil {
+		return nil, err
+	}
+
+	names := []Identifier{{Name: firstName.Literal, span: tokenSpan(firstName)}}
+	for p.match(lexer.TokenComma) {
+		nameToken, err := p.expect(lexer.TokenIdentifier, "expected assignment target after ','")
+		if err != nil {
+			return nil, err
+		}
+
+		names = append(names, Identifier{Name: nameToken.Literal, span: tokenSpan(nameToken)})
+	}
+
+	if _, err := p.expect(lexer.TokenAssign, "expected '=' in assignment"); err != nil {
+		return nil, err
+	}
+
+	values, err := p.parseExpressionList()
+	if err != nil {
+		return nil, err
+	}
+
+	return &AssignStatement{
+		Names:  names,
+		Values: values,
+		span: Span{
+			Start: firstName.Start,
+			End:   values[len(values)-1].Span().End,
+		},
+	}, nil
+}
+
+func (p *Parser) parseFunctionDeclarationStatement() (Statement, error) {
+	startToken, err := p.expect(lexer.TokenFunction, "expected 'function'")
+	if err != nil {
+		return nil, err
+	}
+
+	nameToken, err := p.expect(lexer.TokenIdentifier, "expected function name")
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(lexer.TokenLeftParen, "expected '(' after function name"); err != nil {
+		return nil, err
+	}
+
+	parameters := make([]Identifier, 0)
+	if !p.check(lexer.TokenRightParen) {
+		for {
+			if p.check(lexer.TokenVararg) {
+				return nil, p.errorAtCurrent("vararg parameters are not implemented yet")
+			}
+
+			parameterToken, err := p.expect(lexer.TokenIdentifier, "expected parameter name")
+			if err != nil {
+				return nil, err
+			}
+
+			parameters = append(parameters, Identifier{Name: parameterToken.Literal, span: tokenSpan(parameterToken)})
+			if !p.match(lexer.TokenComma) {
+				break
+			}
+		}
+	}
+
+	if _, err := p.expect(lexer.TokenRightParen, "expected ')' after parameter list"); err != nil {
+		return nil, err
+	}
+
+	body, _, err := p.parseBlock(lexer.TokenEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	endToken, err := p.expect(lexer.TokenEnd, "expected 'end' after function declaration")
+	if err != nil {
+		return nil, err
+	}
+
+	return &FunctionDeclarationStatement{
+		Name:       Identifier{Name: nameToken.Literal, span: tokenSpan(nameToken)},
+		Parameters: parameters,
+		Body:       body,
+		span: Span{
+			Start: startToken.Start,
+			End:   endToken.End,
+		},
+	}, nil
 }
 
 func (p *Parser) parseLocalAssignStatement() (Statement, error) {
@@ -113,6 +247,123 @@ func (p *Parser) parseLocalAssignStatement() (Statement, error) {
 		span: Span{
 			Start: startToken.Start,
 			End:   end,
+		},
+	}, nil
+}
+
+func (p *Parser) parseIfStatement() (Statement, error) {
+	startToken, err := p.expect(lexer.TokenIf, "expected 'if'")
+	if err != nil {
+		return nil, err
+	}
+
+	clauses := make([]IfClause, 0, 1)
+	elseBody := make([]Statement, 0)
+
+	condition, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(lexer.TokenThen, "expected 'then' after if condition"); err != nil {
+		return nil, err
+	}
+
+	body, end, err := p.parseBlock(lexer.TokenElseIf, lexer.TokenElse, lexer.TokenEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	clauses = append(clauses, IfClause{
+		Condition: condition,
+		Body:      body,
+		span: Span{
+			Start: startToken.Start,
+			End:   end,
+		},
+	})
+
+	for p.match(lexer.TokenElseIf) {
+		elseifToken := p.previous()
+		elseifCondition, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := p.expect(lexer.TokenThen, "expected 'then' after elseif condition"); err != nil {
+			return nil, err
+		}
+
+		elseifBody, elseifEnd, err := p.parseBlock(lexer.TokenElseIf, lexer.TokenElse, lexer.TokenEnd)
+		if err != nil {
+			return nil, err
+		}
+
+		clauses = append(clauses, IfClause{
+			Condition: elseifCondition,
+			Body:      elseifBody,
+			span: Span{
+				Start: elseifToken.Start,
+				End:   elseifEnd,
+			},
+		})
+	}
+
+	if p.match(lexer.TokenElse) {
+		var elseEnd lexer.Position
+		elseBody, elseEnd, err = p.parseBlock(lexer.TokenEnd)
+		if err != nil {
+			return nil, err
+		}
+		_ = elseEnd
+	}
+
+	endToken, err := p.expect(lexer.TokenEnd, "expected 'end' after if statement")
+	if err != nil {
+		return nil, err
+	}
+
+	return &IfStatement{
+		Clauses:  clauses,
+		ElseBody: elseBody,
+		span: Span{
+			Start: startToken.Start,
+			End:   endToken.End,
+		},
+	}, nil
+}
+
+func (p *Parser) parseWhileStatement() (Statement, error) {
+	startToken, err := p.expect(lexer.TokenWhile, "expected 'while'")
+	if err != nil {
+		return nil, err
+	}
+
+	condition, err := p.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(lexer.TokenDo, "expected 'do' after while condition"); err != nil {
+		return nil, err
+	}
+
+	body, _, err := p.parseBlock(lexer.TokenEnd)
+	if err != nil {
+		return nil, err
+	}
+
+	endToken, err := p.expect(lexer.TokenEnd, "expected 'end' after while loop")
+	if err != nil {
+		return nil, err
+	}
+
+	return &WhileStatement{
+		Condition: condition,
+		Body:      body,
+		span: Span{
+			Start: startToken.Start,
+			End:   endToken.End,
 		},
 	}, nil
 }
@@ -232,26 +483,32 @@ func (p *Parser) parseUnaryExpression() (Expression, error) {
 }
 
 func (p *Parser) parsePrimaryExpression() (Expression, error) {
+	return p.parsePrefixExpression()
+}
+
+func (p *Parser) parsePrefixExpression() (Expression, error) {
 	token := p.current()
+	var expression Expression
+
 	switch token.Type {
 	case lexer.TokenNil:
 		p.advance()
-		return &NilExpression{span: tokenSpan(token)}, nil
+		expression = &NilExpression{span: tokenSpan(token)}
 	case lexer.TokenTrue:
 		p.advance()
-		return &BooleanExpression{Value: true, span: tokenSpan(token)}, nil
+		expression = &BooleanExpression{Value: true, span: tokenSpan(token)}
 	case lexer.TokenFalse:
 		p.advance()
-		return &BooleanExpression{Value: false, span: tokenSpan(token)}, nil
+		expression = &BooleanExpression{Value: false, span: tokenSpan(token)}
 	case lexer.TokenNumber:
 		p.advance()
-		return &NumberExpression{Literal: token.Literal, span: tokenSpan(token)}, nil
+		expression = &NumberExpression{Literal: token.Literal, span: tokenSpan(token)}
 	case lexer.TokenString:
 		p.advance()
-		return &StringExpression{Value: token.Literal, span: tokenSpan(token)}, nil
+		expression = &StringExpression{Value: token.Literal, span: tokenSpan(token)}
 	case lexer.TokenIdentifier:
 		p.advance()
-		return &Identifier{Name: token.Literal, span: tokenSpan(token)}, nil
+		expression = &Identifier{Name: token.Literal, span: tokenSpan(token)}
 	case lexer.TokenLeftParen:
 		p.advance()
 		expr, err := p.parseExpression()
@@ -263,11 +520,22 @@ func (p *Parser) parsePrimaryExpression() (Expression, error) {
 			return nil, err
 		}
 
-		return expr, nil
+		expression = expr
 	default:
 		// TODO: Extend primary parsing with Lua 5.1 subset forms like function expressions and table constructors.
 		return nil, p.errorAtCurrent(fmt.Sprintf("unexpected token %q in expression", token.Type))
 	}
+
+	for p.check(lexer.TokenLeftParen) {
+		call, err := p.finishCallExpression(expression)
+		if err != nil {
+			return nil, err
+		}
+
+		expression = call
+	}
+
+	return expression, nil
 }
 
 func (p *Parser) current() lexer.Token {
@@ -289,6 +557,63 @@ func (p *Parser) advance() lexer.Token {
 	}
 
 	return token
+}
+
+func (p *Parser) previous() lexer.Token {
+	if p.index == 0 {
+		return p.current()
+	}
+
+	return p.tokens[p.index-1]
+}
+
+func (p *Parser) isAssignmentStatement() bool {
+	index := p.index
+	if index >= len(p.tokens) || p.tokens[index].Type != lexer.TokenIdentifier {
+		return false
+	}
+
+	index++
+	for index < len(p.tokens) && p.tokens[index].Type == lexer.TokenComma {
+		index++
+		if index >= len(p.tokens) || p.tokens[index].Type != lexer.TokenIdentifier {
+			return false
+		}
+		index++
+	}
+
+	return index < len(p.tokens) && p.tokens[index].Type == lexer.TokenAssign
+}
+
+func (p *Parser) finishCallExpression(callee Expression) (*CallExpression, error) {
+	start := callee.Span().Start
+	if _, err := p.expect(lexer.TokenLeftParen, "expected '(' after callee"); err != nil {
+		return nil, err
+	}
+
+	arguments := make([]Expression, 0)
+	if !p.check(lexer.TokenRightParen) {
+		values, err := p.parseExpressionList()
+		if err != nil {
+			return nil, err
+		}
+
+		arguments = values
+	}
+
+	endToken, err := p.expect(lexer.TokenRightParen, "expected ')' after argument list")
+	if err != nil {
+		return nil, err
+	}
+
+	return &CallExpression{
+		Callee:    callee,
+		Arguments: arguments,
+		span: Span{
+			Start: start,
+			End:   endToken.End,
+		},
+	}, nil
 }
 
 func (p *Parser) check(types ...lexer.TokenType) bool {
