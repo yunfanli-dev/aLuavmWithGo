@@ -11,16 +11,30 @@ import (
 )
 
 type executionResult struct {
+	// returnValues 保存当前语句块或函数执行显式产生的返回值列表。
+	// 它会在 `return`、函数调用收尾或部分控制流节点中向上层传递。
 	returnValues []Value
-	breakLoop    bool
+	// breakLoop 标记当前执行结果是否代表一次 `break` 控制流跳出。
+	// 外层循环节点会消费这个标记，普通语句块则需要继续向上传递。
+	breakLoop bool
 }
 
 type executor struct {
-	scopes         []map[string]*valueCell
-	varargs        []Value
-	stepLimit      int
+	// scopes 维护当前执行栈可见的局部作用域链。
+	// 最后一个元素总是当前最内层作用域，变量查找和赋值都依赖这条链路。
+	scopes []map[string]*valueCell
+	// varargs 保存当前函数调用收到的额外可变参数。
+	// 只有在声明了 `...` 的函数作用域内，这些值才会被相关表达式读取。
+	varargs []Value
+	// stepLimit 记录本次执行允许使用的最大步数预算。
+	// 非正数表示不启用限制，正数时会和 remainingSteps 一起工作。
+	stepLimit int
+	// remainingSteps 保存当前执行还剩多少步可以消耗。
+	// 每执行一条受计步保护的语句或表达式路径时都会逐步递减。
 	remainingSteps int
-	ctx            context.Context
+	// ctx 持有当前执行绑定的上下文对象。
+	// 执行过程中会定期检查它，以支持超时和宿主主动取消。
+	ctx context.Context
 }
 
 // executeProgram 执行当前 IR 子集程序，并返回脚本显式产生的返回值。
