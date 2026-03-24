@@ -250,6 +250,8 @@ func tableSequenceEnd(tableValue *table, startIndex int) (int, error) {
 func (s *State) registerBuiltinTableLibrary() {
 	s.registerTableGetN()
 	s.registerTableMaxN()
+	s.registerTableForeach()
+	s.registerTableForeachI()
 	s.registerTableInsert()
 	s.registerTableRemove()
 	s.registerTableConcat()
@@ -259,9 +261,16 @@ func (s *State) registerBuiltinTableLibrary() {
 // registerBuiltinMathLibrary 注册当前最小可用的全局 `math` 库入口。
 // 当前只覆盖项目已落地的一小部分数值函数。
 func (s *State) registerBuiltinMathLibrary() {
+	s.registerMathConstants()
 	s.registerMathAbs()
 	s.registerMathFloor()
 	s.registerMathCeil()
+	s.registerMathModF()
+	s.registerMathDeg()
+	s.registerMathRad()
+	s.registerMathFrexp()
+	s.registerMathFMod()
+	s.registerMathLdexp()
 	s.registerMathMax()
 	s.registerMathMin()
 	s.registerMathSqrt()
@@ -269,16 +278,34 @@ func (s *State) registerBuiltinMathLibrary() {
 	s.registerMathRandom()
 	s.registerMathRandomSeed()
 	s.registerMathLog()
+	s.registerMathLog10()
 	s.registerMathExp()
+	s.registerMathSinh()
+	s.registerMathCosh()
+	s.registerMathTanh()
 	s.registerMathSin()
 	s.registerMathCos()
+	s.registerMathTan()
+	s.registerMathAtan()
+	s.registerMathAtan2()
+	s.registerMathAsin()
+	s.registerMathAcos()
+}
+
+// registerMathConstants 把当前最小可用的数学常量挂到 `math` 库表上。
+// 这样脚本可以按 Lua 习惯直接通过 `math.pi`、`math.huge` 读取常量值。
+func (s *State) registerMathConstants() {
+	_ = s.registerMathConstant("pi", math.Pi)
+	_ = s.registerMathConstant("huge", math.Inf(1))
 }
 
 // registerBuiltinStringLibrary 注册当前最小可用的全局 `string` 库入口。
 // 当前字符串库仍是子集实现，但已经覆盖若干高频文本处理能力。
 func (s *State) registerBuiltinStringLibrary() {
 	s.registerStringFind()
+	s.registerStringFormat()
 	s.registerStringGSub()
+	s.registerStringGMatch()
 	s.registerStringMatch()
 	s.registerStringLen()
 	s.registerStringSub()
@@ -331,6 +358,95 @@ func (s *State) registerTableMaxN() {
 		}
 
 		return []Value{{Type: ValueTypeNumber, Data: maximum}}, nil
+	})
+}
+
+// registerTableForeach 注册最小 `table.foreach`。
+// 当前按现有插入顺序遍历全部键值对，并支持在回调返回非 nil 时提前结束。
+func (s *State) registerTableForeach() {
+	_ = s.registerContextualLibraryFunction("table", "foreach", func(exec *executor, args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("table.foreach expects 2 arguments")
+		}
+
+		tableValue, err := requireBuiltinTable(args[0], "table.foreach")
+		if err != nil {
+			return nil, err
+		}
+
+		if args[1].Type != ValueTypeFunction {
+			return nil, fmt.Errorf("table.foreach expects function callback")
+		}
+
+		key, value, ok, err := tableValue.firstEntry()
+		if err != nil {
+			return nil, err
+		}
+
+		for ok {
+			returnValues, err := exec.callFunctionValue(args[1], []Value{key, value})
+			if err != nil {
+				return nil, err
+			}
+
+			if len(returnValues) > 0 && returnValues[0].Type != ValueTypeNil {
+				return []Value{returnValues[0]}, nil
+			}
+
+			key, value, ok, err = tableValue.next(key)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		return []Value{NilValue()}, nil
+	})
+}
+
+// registerTableForeachI 注册最小 `table.foreachi`。
+// 当前按连续数组段从 1 开始顺序遍历，并支持在回调返回非 nil 时提前结束。
+func (s *State) registerTableForeachI() {
+	_ = s.registerContextualLibraryFunction("table", "foreachi", func(exec *executor, args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("table.foreachi expects 2 arguments")
+		}
+
+		tableValue, err := requireBuiltinTable(args[0], "table.foreachi")
+		if err != nil {
+			return nil, err
+		}
+
+		if args[1].Type != ValueTypeFunction {
+			return nil, fmt.Errorf("table.foreachi expects function callback")
+		}
+
+		endIndex, err := tableSequenceEnd(tableValue, 1)
+		if err != nil {
+			return nil, err
+		}
+
+		for index := 1; index <= endIndex; index++ {
+			key := Value{Type: ValueTypeNumber, Data: float64(index)}
+			value, exists, err := tableValue.get(key)
+			if err != nil {
+				return nil, err
+			}
+
+			if !exists || value.Type == ValueTypeNil {
+				continue
+			}
+
+			returnValues, err := exec.callFunctionValue(args[1], []Value{key, value})
+			if err != nil {
+				return nil, err
+			}
+
+			if len(returnValues) > 0 && returnValues[0].Type != ValueTypeNil {
+				return []Value{returnValues[0]}, nil
+			}
+		}
+
+		return []Value{NilValue()}, nil
 	})
 }
 
@@ -637,6 +753,123 @@ func (s *State) registerMathAbs() {
 	})
 }
 
+// registerMathDeg 注册 `math.deg`，用于把弧度值转换为角度值。
+func (s *State) registerMathDeg() {
+	_ = s.registerLibraryFunction("math", "deg", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.deg expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.deg")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: number * 180 / math.Pi}}, nil
+	})
+}
+
+// registerMathRad 注册 `math.rad`，用于把角度值转换为弧度值。
+func (s *State) registerMathRad() {
+	_ = s.registerLibraryFunction("math", "rad", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.rad expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.rad")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: number * math.Pi / 180}}, nil
+	})
+}
+
+// registerMathModF 注册 `math.modf`，用于把数值拆成整数部分和小数部分。
+// 返回值遵循 Go `math.Modf` 的基础行为，便于补齐常见数学拆分链路。
+func (s *State) registerMathModF() {
+	_ = s.registerLibraryFunction("math", "modf", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.modf expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.modf")
+		if err != nil {
+			return nil, err
+		}
+
+		integerPart, fractionalPart := math.Modf(number)
+		return []Value{
+			{Type: ValueTypeNumber, Data: integerPart},
+			{Type: ValueTypeNumber, Data: fractionalPart},
+		}, nil
+	})
+}
+
+// registerMathFrexp 注册 `math.frexp`，用于把数值拆成尾数和指数。
+// 该函数返回两个值，便于脚本侧做基础二进制指数分解。
+func (s *State) registerMathFrexp() {
+	_ = s.registerLibraryFunction("math", "frexp", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.frexp expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.frexp")
+		if err != nil {
+			return nil, err
+		}
+
+		fraction, exponent := math.Frexp(number)
+		return []Value{
+			{Type: ValueTypeNumber, Data: fraction},
+			{Type: ValueTypeNumber, Data: float64(exponent)},
+		}, nil
+	})
+}
+
+// registerMathFMod 注册 `math.fmod`，用于执行浮点余数计算。
+// 该函数和 `%` 运算符分开暴露，便于脚本显式调用数学库做余数运算。
+func (s *State) registerMathFMod() {
+	_ = s.registerLibraryFunction("math", "fmod", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("math.fmod expects 2 arguments")
+		}
+
+		left, err := requireNumber(args[0], "math.fmod")
+		if err != nil {
+			return nil, err
+		}
+
+		right, err := requireNumber(args[1], "math.fmod")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Mod(left, right)}}, nil
+	})
+}
+
+// registerMathLdexp 注册 `math.ldexp`，用于按尾数和指数重新组装数值。
+func (s *State) registerMathLdexp() {
+	_ = s.registerLibraryFunction("math", "ldexp", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("math.ldexp expects 2 arguments")
+		}
+
+		fraction, err := requireNumber(args[0], "math.ldexp")
+		if err != nil {
+			return nil, err
+		}
+
+		exponent, err := builtinInteger(args[1], "math.ldexp")
+		if err != nil {
+			return nil, fmt.Errorf("math.ldexp expects integer exponent")
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Ldexp(fraction, exponent)}}, nil
+	})
+}
+
 // registerMathFloor 注册 `math.floor`，用于向下取整。
 func (s *State) registerMathFloor() {
 	_ = s.registerLibraryFunction("math", "floor", func(args []Value) ([]Value, error) {
@@ -833,6 +1066,22 @@ func (s *State) registerMathLog() {
 	})
 }
 
+// registerMathLog10 注册 `math.log10`，用于常用十进制对数计算。
+func (s *State) registerMathLog10() {
+	_ = s.registerLibraryFunction("math", "log10", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.log10 expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.log10")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Log10(number)}}, nil
+	})
+}
+
 // registerMathExp 注册 `math.exp`，用于自然指数函数计算。
 func (s *State) registerMathExp() {
 	_ = s.registerLibraryFunction("math", "exp", func(args []Value) ([]Value, error) {
@@ -846,6 +1095,57 @@ func (s *State) registerMathExp() {
 		}
 
 		return []Value{{Type: ValueTypeNumber, Data: math.Exp(number)}}, nil
+	})
+}
+
+// registerMathSinh 注册 `math.sinh`，用于双曲正弦计算。
+// 该函数属于较常见的数学库补充能力，适合和指数、三角函数一起使用。
+func (s *State) registerMathSinh() {
+	_ = s.registerLibraryFunction("math", "sinh", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.sinh expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.sinh")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Sinh(number)}}, nil
+	})
+}
+
+// registerMathCosh 注册 `math.cosh`，用于双曲余弦计算。
+// 该函数和 `math.sinh` 一样属于常见的双曲函数入口，方便脚本补齐基础数值计算场景。
+func (s *State) registerMathCosh() {
+	_ = s.registerLibraryFunction("math", "cosh", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.cosh expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.cosh")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Cosh(number)}}, nil
+	})
+}
+
+// registerMathTanh 注册 `math.tanh`，用于双曲正切计算。
+// 它和 `sinh`、`cosh` 一起补齐最常见的双曲函数三件套，方便脚本执行基础数值变换。
+func (s *State) registerMathTanh() {
+	_ = s.registerLibraryFunction("math", "tanh", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.tanh expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.tanh")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Tanh(number)}}, nil
 	})
 }
 
@@ -881,10 +1181,155 @@ func (s *State) registerMathCos() {
 	})
 }
 
+// registerMathTan 注册 `math.tan`，按弧度计算正切值。
+func (s *State) registerMathTan() {
+	_ = s.registerLibraryFunction("math", "tan", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.tan expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.tan")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Tan(number)}}, nil
+	})
+}
+
+// registerMathAtan 注册 `math.atan`，按弧度返回反正切值。
+func (s *State) registerMathAtan() {
+	_ = s.registerLibraryFunction("math", "atan", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.atan expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.atan")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Atan(number)}}, nil
+	})
+}
+
+// registerMathAtan2 注册 `math.atan2`，按弧度返回点 `(x, y)` 对应的象限反正切值。
+// 它适合在已知两个分量时保留象限信息，避免单参数 `atan` 丢失符号组合语义。
+func (s *State) registerMathAtan2() {
+	_ = s.registerLibraryFunction("math", "atan2", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("math.atan2 expects 2 arguments")
+		}
+
+		y, err := requireNumber(args[0], "math.atan2")
+		if err != nil {
+			return nil, err
+		}
+
+		x, err := requireNumber(args[1], "math.atan2")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Atan2(y, x)}}, nil
+	})
+}
+
+// registerMathAsin 注册 `math.asin`，按弧度返回反正弦值。
+func (s *State) registerMathAsin() {
+	_ = s.registerLibraryFunction("math", "asin", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.asin expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.asin")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Asin(number)}}, nil
+	})
+}
+
+// registerMathAcos 注册 `math.acos`，按弧度返回反余弦值。
+func (s *State) registerMathAcos() {
+	_ = s.registerLibraryFunction("math", "acos", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("math.acos expects 1 argument")
+		}
+
+		number, err := requireNumber(args[0], "math.acos")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Acos(number)}}, nil
+	})
+}
+
+// registerStringGMatch 注册最小 `string.gmatch`。
+// 当前只支持纯文本匹配，并通过闭包迭代器逐次返回匹配到的完整片段。
+func (s *State) registerStringGMatch() {
+	_ = s.registerLibraryFunction("string", "gmatch", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("string.gmatch expects at least 2 arguments")
+		}
+
+		text, err := requireStringArg(args[0], "string.gmatch")
+		if err != nil {
+			return nil, err
+		}
+
+		pattern, err := requireStringArg(args[1], "string.gmatch")
+		if err != nil {
+			return nil, err
+		}
+
+		startIndex := 1
+		if len(args) > 2 {
+			start, err := builtinInteger(args[2], "string.gmatch")
+			if err != nil {
+				return nil, err
+			}
+
+			startIndex = start
+		}
+
+		searchStart := normalizeStringStart(len(text), startIndex)
+
+		// TODO: 后续补齐 Lua 5.1 的 pattern / capture 匹配能力，
+		// 当前 `string.gmatch` 始终按纯文本子串迭代处理。
+		iterator := makeStringGMatchIterator(text, pattern, searchStart)
+		return []Value{{Type: ValueTypeFunction, Data: iterator}}, nil
+	})
+}
+
+// registerStringFormat 注册最小 `string.format`。
+// 当前只支持少量高频格式符，用于补齐基础字符串格式化能力。
+func (s *State) registerStringFormat() {
+	_ = s.registerLibraryFunction("string", "format", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("string.format expects at least 1 argument")
+		}
+
+		format, err := requireStringArg(args[0], "string.format")
+		if err != nil {
+			return nil, err
+		}
+
+		result, err := formatStringTemplate(format, args[1:])
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeString, Data: result}}, nil
+	})
+}
+
 // registerStringGSub 注册最小 `string.gsub`。
-// 当前只支持纯文本全局替换、字符串替换值和可选替换次数。
+// 当前支持纯文本全局替换、字符串 / table / function 三种替换器，以及可选替换次数。
 func (s *State) registerStringGSub() {
-	_ = s.registerLibraryFunction("string", "gsub", func(args []Value) ([]Value, error) {
+	_ = s.registerContextualLibraryFunction("string", "gsub", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 3 {
 			return nil, fmt.Errorf("string.gsub expects at least 3 arguments")
 		}
@@ -895,11 +1340,6 @@ func (s *State) registerStringGSub() {
 		}
 
 		pattern, err := requireStringArg(args[1], "string.gsub")
-		if err != nil {
-			return nil, err
-		}
-
-		replacement, err := requireStringArg(args[2], "string.gsub")
 		if err != nil {
 			return nil, err
 		}
@@ -919,7 +1359,7 @@ func (s *State) registerStringGSub() {
 		}
 
 		// TODO: 后续补齐 Lua 5.1 更完整的 `string.gsub` 语义，
-		// 包括 pattern 匹配以及 table / function 替换器等形式。
+		// 包括 pattern / capture 匹配以及更完整的 replacer 细节。
 		if replacementLimit == 0 {
 			return []Value{
 				{Type: ValueTypeString, Data: text},
@@ -932,14 +1372,22 @@ func (s *State) registerStringGSub() {
 				replacementLimit = len(text) + 1
 			}
 
-			result, replacements := replaceEmptyStringMatches(text, replacement, replacementLimit)
+			result, replacements, err := replaceEmptyStringMatches(exec, text, pattern, args[2], replacementLimit)
+			if err != nil {
+				return nil, err
+			}
+
 			return []Value{
 				{Type: ValueTypeString, Data: result},
 				{Type: ValueTypeNumber, Data: float64(replacements)},
 			}, nil
 		}
 
-		result, replacements := replacePlainSubstrings(text, pattern, replacement, replacementLimit)
+		result, replacements, err := replacePlainSubstrings(exec, text, pattern, args[2], replacementLimit)
+		if err != nil {
+			return nil, err
+		}
+
 		return []Value{
 			{Type: ValueTypeString, Data: result},
 			{Type: ValueTypeNumber, Data: float64(replacements)},
@@ -1252,6 +1700,19 @@ func (s *State) registerStringChar() {
 	})
 }
 
+// registerMathConstant 把一个数值常量写入 `math` 库表。
+func (s *State) registerMathConstant(name string, value float64) error {
+	library, err := s.ensureLibraryTable("math")
+	if err != nil {
+		return err
+	}
+
+	return library.set(Value{Type: ValueTypeString, Data: name}, Value{
+		Type: ValueTypeNumber,
+		Data: value,
+	})
+}
+
 func (s *State) registerTableLibraryFunction(name string, fn NativeFunction) error {
 	return s.registerLibraryFunction("table", name, fn)
 }
@@ -1361,19 +1822,16 @@ func normalizeStringRange(length int, start int, end int) (int, int) {
 }
 
 // replacePlainSubstrings 按从左到右的顺序执行纯文本子串替换，并支持可选替换次数限制。
-func replacePlainSubstrings(text string, pattern string, replacement string, limit int) (string, int) {
+// 替换值可以来自字符串、table 或 function；当前仍不支持 pattern / capture。
+func replacePlainSubstrings(exec *executor, text string, pattern string, replacement Value, limit int) (string, int, error) {
 	if pattern == "" {
-		return text, 0
-	}
-
-	if limit < 0 {
-		return strings.ReplaceAll(text, pattern, replacement), strings.Count(text, pattern)
+		return text, 0, nil
 	}
 
 	var builder strings.Builder
 	searchStart := 0
 	replacements := 0
-	for replacements < limit {
+	for limit < 0 || replacements < limit {
 		matchOffset := strings.Index(text[searchStart:], pattern)
 		if matchOffset < 0 {
 			break
@@ -1381,38 +1839,207 @@ func replacePlainSubstrings(text string, pattern string, replacement string, lim
 
 		matchStart := searchStart + matchOffset
 		builder.WriteString(text[searchStart:matchStart])
-		builder.WriteString(replacement)
+
+		resolved, err := resolveGSubReplacement(exec, replacement, pattern)
+		if err != nil {
+			return "", 0, err
+		}
+
+		builder.WriteString(resolved)
 		searchStart = matchStart + len(pattern)
 		replacements++
 	}
 
 	builder.WriteString(text[searchStart:])
-	return builder.String(), replacements
+	return builder.String(), replacements, nil
 }
 
 // replaceEmptyStringMatches 实现空模式下最小 `gsub` 行为。
 // 它会在字符串边界之间插入替换值，并返回实际替换次数。
-func replaceEmptyStringMatches(text string, replacement string, limit int) (string, int) {
+func replaceEmptyStringMatches(exec *executor, text string, pattern string, replacement Value, limit int) (string, int, error) {
 	if limit <= 0 {
-		return text, 0
+		return text, 0, nil
 	}
 
 	var builder strings.Builder
 	replacements := 0
 	if replacements < limit {
-		builder.WriteString(replacement)
+		resolved, err := resolveGSubReplacement(exec, replacement, pattern)
+		if err != nil {
+			return "", 0, err
+		}
+
+		builder.WriteString(resolved)
 		replacements++
 	}
 
 	for index := 0; index < len(text); index++ {
 		builder.WriteByte(text[index])
 		if replacements < limit {
-			builder.WriteString(replacement)
+			resolved, err := resolveGSubReplacement(exec, replacement, pattern)
+			if err != nil {
+				return "", 0, err
+			}
+
+			builder.WriteString(resolved)
 			replacements++
 		}
 	}
 
-	return builder.String(), replacements
+	return builder.String(), replacements, nil
+}
+
+// makeStringGMatchIterator 构造一个最小 `string.gmatch` 纯文本迭代器。
+// 迭代器会把搜索进度保存在 Go 闭包里，因此脚本侧只看到标准的无状态调用形态。
+func makeStringGMatchIterator(text string, pattern string, searchStart int) *nativeFunction {
+	nextIndex := searchStart - 1
+	emptyPatternDone := false
+
+	return &nativeFunction{
+		name: "string.gmatch_iterator",
+		fn: func(args []Value) ([]Value, error) {
+			if pattern == "" {
+				if emptyPatternDone || nextIndex > len(text) {
+					return []Value{NilValue()}, nil
+				}
+
+				emptyPatternDone = true
+				return []Value{{Type: ValueTypeString, Data: ""}}, nil
+			}
+
+			if nextIndex >= len(text) {
+				return []Value{NilValue()}, nil
+			}
+
+			matchOffset := strings.Index(text[nextIndex:], pattern)
+			if matchOffset < 0 {
+				return []Value{NilValue()}, nil
+			}
+
+			matchStart := nextIndex + matchOffset
+			nextIndex = matchStart + len(pattern)
+			return []Value{{Type: ValueTypeString, Data: pattern}}, nil
+		},
+	}
+}
+
+// resolveGSubReplacement 按当前最小 `string.gsub` 语义解析一次替换结果。
+// 纯文本模式下，function 和 table 替换器都只接收完整匹配片段，不涉及 capture。
+func resolveGSubReplacement(exec *executor, replacement Value, match string) (string, error) {
+	switch replacement.Type {
+	case ValueTypeString:
+		return replacement.Data.(string), nil
+	case ValueTypeFunction:
+		returnValues, err := exec.callFunctionValue(replacement, []Value{{Type: ValueTypeString, Data: match}})
+		if err != nil {
+			return "", err
+		}
+
+		if len(returnValues) == 0 || returnValues[0].Type == ValueTypeNil {
+			return match, nil
+		}
+
+		if returnValues[0].Type == ValueTypeBoolean && returnValues[0].Data == false {
+			return match, nil
+		}
+
+		return exec.valueToString(returnValues[0])
+	case ValueTypeTable:
+		tableValue, ok := replacement.Data.(*table)
+		if !ok {
+			return "", fmt.Errorf("invalid table replacer payload %T", replacement.Data)
+		}
+
+		resolved, exists, err := tableValue.get(Value{Type: ValueTypeString, Data: match})
+		if err != nil {
+			return "", err
+		}
+
+		if !exists || resolved.Type == ValueTypeNil {
+			return match, nil
+		}
+
+		if resolved.Type == ValueTypeBoolean && resolved.Data == false {
+			return match, nil
+		}
+
+		return exec.valueToString(resolved)
+	default:
+		return "", fmt.Errorf("string.gsub expects string, table, or function replacement")
+	}
+}
+
+// formatStringTemplate 按当前最小子集解析 `string.format` 模板并拼装输出字符串。
+func formatStringTemplate(format string, args []Value) (string, error) {
+	var builder strings.Builder
+	argIndex := 0
+	for index := 0; index < len(format); index++ {
+		if format[index] != '%' {
+			builder.WriteByte(format[index])
+			continue
+		}
+
+		if index+1 >= len(format) {
+			return "", fmt.Errorf("string.format has trailing %%")
+		}
+
+		specifier := format[index+1]
+		index++
+		if specifier == '%' {
+			builder.WriteByte('%')
+			continue
+		}
+
+		if argIndex >= len(args) {
+			return "", fmt.Errorf("string.format missing value for %%%c", specifier)
+		}
+
+		fragment, err := renderStringFormatSpecifier(specifier, args[argIndex])
+		if err != nil {
+			return "", err
+		}
+
+		builder.WriteString(fragment)
+		argIndex++
+	}
+
+	// TODO: 后续补齐 Lua 5.1 更完整的 `string.format` 语义，
+	// 包括宽度、精度、更多格式符以及更细的数值格式控制。
+	return builder.String(), nil
+}
+
+// renderStringFormatSpecifier 渲染一个当前已支持的 `string.format` 格式符。
+func renderStringFormatSpecifier(specifier byte, value Value) (string, error) {
+	switch specifier {
+	case 's':
+		if value.Type != ValueTypeString {
+			return "", fmt.Errorf("string.format %%s expects string argument")
+		}
+
+		return value.Data.(string), nil
+	case 'q':
+		if value.Type != ValueTypeString {
+			return "", fmt.Errorf("string.format %%q expects string argument")
+		}
+
+		return strconv.Quote(value.Data.(string)), nil
+	case 'd', 'i':
+		number, err := builtinInteger(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%%c expects integer argument", specifier)
+		}
+
+		return strconv.Itoa(number), nil
+	case 'f':
+		number, err := requireNumber(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%f expects numeric argument")
+		}
+
+		return fmt.Sprintf("%f", number), nil
+	default:
+		return "", fmt.Errorf("string.format does not support format %%%c", specifier)
+	}
 }
 
 func (s *State) ensureLibraryTable(name string) (*table, error) {

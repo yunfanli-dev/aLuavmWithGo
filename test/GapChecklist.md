@@ -18,13 +18,13 @@
 ## 运行时与标准库空白
 
 - `math` 库仍只覆盖较小子集
-  说明：当前已支持基础取整、极值、随机、指数、对数和三角函数，但离完整 Lua 5.1 数学库仍有距离。
+  说明：当前已支持 `pi` / `huge`、基础取整、`modf`、`fmod`、`frexp` / `ldexp`、角度/弧度转换、极值、随机、指数、自然/十进制对数，以及基础三角/反三角函数、`atan2`、`sinh`、`cosh` 和 `tanh`，但离完整 Lua 5.1 数学库仍有距离。
 
 - `string` 库仍只覆盖较小子集
-  说明：当前已支持长度、纯文本 `find` / `match` / `gsub`、截取、大小写、重复、反转、字节提取和按字节组装，仍缺少 Lua pattern 版 `find` / `match` / `gsub` 以及更完整替换语义。
+  说明：当前已支持长度、纯文本 `find` / `match` / `gmatch` / `gsub`、最小 `format`、截取、大小写、重复、反转、字节提取和按字节组装；其中 `gsub` 已支持字符串 / table / function 替换器，但仍缺少 Lua pattern 版 `find` / `match` / `gmatch` / `gsub`、capture 语义以及更完整格式化语义。
 
 - `table` 库仍只覆盖较小子集
-  说明：当前已支持 `getn`、`maxn`、`insert`、`remove`、`concat`、`sort`，仍未补齐更完整的序列表辅助能力。
+  说明：当前已支持 `getn`、`maxn`、`foreach`、`foreachi`、`insert`、`remove`、`concat`、`sort`，仍未补齐更完整的序列表辅助能力。
 
 - upvalue、闭包和 metatable 仍未完全对齐 Lua 5.1
   说明：当前已具备最小可用链路，但更多边界行为和完整兼容性仍未系统补齐。
