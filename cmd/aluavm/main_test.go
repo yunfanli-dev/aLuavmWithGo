@@ -251,6 +251,54 @@ func TestCLIProcessMultivalueShowcaseExample(t *testing.T) {
 	}
 }
 
+func TestCLIProcessTableMetatableShowcaseExample(t *testing.T) {
+	result := runCLIProcess(t, repoRelativePath("examples", "table_metatable_showcase.lua"))
+
+	if result.exitCode != cliExitCodeSuccess {
+		t.Fatalf("unexpected exit code: %d, stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+
+	expectedLines := []string{
+		"identity\ttable-a\ttable-b\tfn-a\tfn-b\n",
+		"chain\tfrom-chain\t42\n",
+	}
+	for _, line := range expectedLines {
+		if !strings.Contains(result.stdout, line) {
+			t.Fatalf("missing line %q in stdout %q", line, result.stdout)
+		}
+	}
+	if strings.Contains(result.stdout, "aluavm bootstrap ready") {
+		t.Fatalf("unexpected bootstrap status in script stdout: %q", result.stdout)
+	}
+}
+
+func TestCLIProcessGenericForShowcaseExample(t *testing.T) {
+	result := runCLIProcess(t, repoRelativePath("examples", "generic_for_showcase.lua"))
+
+	if result.exitCode != cliExitCodeSuccess {
+		t.Fatalf("unexpected exit code: %d, stderr=%q", result.exitCode, result.stderr)
+	}
+	if result.stderr != "" {
+		t.Fatalf("unexpected stderr: %q", result.stderr)
+	}
+
+	expectedLines := []string{
+		"custom_iter\t66\n",
+		"gmatch_iter\ta|a\n",
+	}
+	for _, line := range expectedLines {
+		if !strings.Contains(result.stdout, line) {
+			t.Fatalf("missing line %q in stdout %q", line, result.stdout)
+		}
+	}
+	if strings.Contains(result.stdout, "aluavm bootstrap ready") {
+		t.Fatalf("unexpected bootstrap status in script stdout: %q", result.stdout)
+	}
+}
+
 func TestCLIProcessLoopTimingScript(t *testing.T) {
 	result := runCLIProcess(t, repoRelativePath("test3.lua"))
 

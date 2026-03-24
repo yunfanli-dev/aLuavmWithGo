@@ -20,6 +20,9 @@ type executionResult struct {
 }
 
 type executor struct {
+	// state 指向当前执行绑定的运行时状态。
+	// 它主要用于 `_G` 全局环境桥接和少量跨 helper 的运行时协作。
+	state *State
 	// scopes 维护当前执行栈可见的局部作用域链。
 	// 最后一个元素总是当前最内层作用域，变量查找和赋值都依赖这条链路。
 	scopes []map[string]*valueCell
@@ -50,12 +53,7 @@ func executeProgram(ctx context.Context, state *State, program *ir.Program) (*ex
 		ctx = context.Background()
 	}
 
-	exec := &executor{
-		scopes:         []map[string]*valueCell{state.globals},
-		stepLimit:      state.stepLimit,
-		remainingSteps: state.stepLimit,
-		ctx:            ctx,
-	}
+	exec := newExecutor(ctx, state)
 
 	for _, statement := range program.Statements {
 		result, done, err := exec.executeStatement(statement)
@@ -73,6 +71,18 @@ func executeProgram(ctx context.Context, state *State, program *ir.Program) (*ex
 	}
 
 	return &executionResult{}, nil
+}
+
+// newExecutor 基于当前 State 和上下文创建一份执行器实例。
+// 常规脚本执行和 `require` 触发的 preload loader 都会复用它。
+func newExecutor(ctx context.Context, state *State) *executor {
+	return &executor{
+		state:          state,
+		scopes:         []map[string]*valueCell{state.globals},
+		stepLimit:      state.stepLimit,
+		remainingSteps: state.stepLimit,
+		ctx:            ctx,
+	}
 }
 
 func (e *executor) executeStatement(statement ir.Statement) (*executionResult, bool, error) {
@@ -587,8 +597,28 @@ func (e *executor) assignTarget(target ir.Expression, value Value) error {
 }
 
 // readTableIndex 读取一个 table 字段，并在需要时应用最小 `__index` 元方法回退。
-// 这条路径同时服务于方括号索引和点语法字段读取。
+// 这条路径同时服务于方括号索引和点语法字段读取，并会阻止明显的链式回退环。
 func (e *executor) readTableIndex(tableValue *table, index Value) (Value, error) {
+	return e.readTableIndexWithVisited(tableValue, index, make(map[*table]struct{}))
+}
+
+// readTableIndexWithVisited 在读取 table 字段时携带一份已访问表集合。
+// 这样当 `__index` table 回退形成自引用或环时，可以及时报错而不是无限递归。
+func (e *executor) readTableIndexWithVisited(tableValue *table, index Value, visited map[*table]struct{}) (Value, error) {
+	if e.state != nil && e.state.isGlobalEnv(tableValue) && index.Type == ValueTypeString {
+		if value, ok := e.state.lookupGlobalValue(index.Data.(string)); ok {
+			return value, nil
+		}
+
+		return NilValue(), nil
+	}
+
+	if _, exists := visited[tableValue]; exists {
+		return NilValue(), fmt.Errorf("loop in table __index chain")
+	}
+
+	visited[tableValue] = struct{}{}
+
 	value, exists, err := tableValue.get(index)
 	if err != nil {
 		return NilValue(), err
@@ -619,7 +649,7 @@ func (e *executor) readTableIndex(tableValue *table, index Value) (Value, error)
 			return NilValue(), fmt.Errorf("invalid __index table payload %T", metaIndex.Data)
 		}
 
-		return e.readTableIndex(fallbackTable, index)
+		return e.readTableIndexWithVisited(fallbackTable, index, visited)
 	case ValueTypeFunction:
 		returnValues, err := e.callFunctionValue(metaIndex, []Value{
 			{Type: ValueTypeTable, Data: tableValue},
@@ -635,15 +665,32 @@ func (e *executor) readTableIndex(tableValue *table, index Value) (Value, error)
 
 		return returnValues[0], nil
 	default:
-		// TODO: 后续按需要补齐 Lua 5.1 更完整的 `__index` 形态，
-		// 当前只覆盖最小可用回退路径。
-		return NilValue(), nil
+		// TODO: 后续按需要补齐 Lua 5.1 更完整的 `__index` 链式形态。
+		// 当前如果元方法值既不是 table 也不是 function，则直接按非法索引目标报错。
+		return NilValue(), fmt.Errorf("attempt to index non-table __index value of type %s", metaIndex.Type)
 	}
 }
 
 // writeTableIndex 写入一个 table 字段，并在需要时应用最小 `__newindex` 元方法回退。
-// 这条路径统一处理直接赋值和可能触发的元方法转发。
+// 这条路径统一处理直接赋值和可能触发的元方法转发，并会阻止明显的链式回退环。
 func (e *executor) writeTableIndex(tableValue *table, index Value, value Value) error {
+	return e.writeTableIndexWithVisited(tableValue, index, value, make(map[*table]struct{}))
+}
+
+// writeTableIndexWithVisited 在写入 table 字段时携带一份已访问表集合。
+// 这样当 `__newindex` table 回退形成自引用或环时，可以及时报错而不是无限递归。
+func (e *executor) writeTableIndexWithVisited(tableValue *table, index Value, value Value, visited map[*table]struct{}) error {
+	if e.state != nil && e.state.isGlobalEnv(tableValue) && index.Type == ValueTypeString {
+		e.state.setGlobalValue(index.Data.(string), value)
+		return nil
+	}
+
+	if _, exists := visited[tableValue]; exists {
+		return fmt.Errorf("loop in table __newindex chain")
+	}
+
+	visited[tableValue] = struct{}{}
+
 	_, exists, err := tableValue.get(index)
 	if err != nil {
 		return err
@@ -674,7 +721,7 @@ func (e *executor) writeTableIndex(tableValue *table, index Value, value Value) 
 			return fmt.Errorf("invalid __newindex table payload %T", metaNewIndex.Data)
 		}
 
-		return e.writeTableIndex(fallbackTable, index, value)
+		return e.writeTableIndexWithVisited(fallbackTable, index, value, visited)
 	case ValueTypeFunction:
 		_, err := e.callFunctionValue(metaNewIndex, []Value{
 			{Type: ValueTypeTable, Data: tableValue},
@@ -683,9 +730,9 @@ func (e *executor) writeTableIndex(tableValue *table, index Value, value Value) 
 		})
 		return err
 	default:
-		// TODO: 后续按需要补齐 Lua 5.1 更完整的 `__newindex` 形态，
-		// 当前只覆盖最小可用回退路径。
-		return tableValue.set(index, value)
+		// TODO: 后续按需要补齐 Lua 5.1 更完整的 `__newindex` 链式形态。
+		// 当前如果元方法值既不是 table 也不是 function，则直接按非法赋值目标报错。
+		return fmt.Errorf("attempt to index-assign non-table __newindex value of type %s", metaNewIndex.Type)
 	}
 }
 
@@ -771,12 +818,24 @@ func (e *executor) popScope() {
 }
 
 func (e *executor) callFunctionValue(callee Value, arguments []Value) ([]Value, error) {
+	return e.callFunctionValueWithVisited(callee, arguments, make(map[*table]struct{}))
+}
+
+// callFunctionValueWithVisited 调用一个运行时可调用值，并跟踪 `__call` 链上已经访问过的 table。
+// 这样当 `__call` 元方法形成自引用或环时，可以及时报错而不是无限递归。
+func (e *executor) callFunctionValueWithVisited(callee Value, arguments []Value, visited map[*table]struct{}) ([]Value, error) {
 	if callee.Type != ValueTypeFunction {
 		if callee.Type == ValueTypeTable {
 			tableValue, ok := callee.Data.(*table)
 			if !ok {
 				return nil, fmt.Errorf("invalid table payload %T", callee.Data)
 			}
+
+			if _, exists := visited[tableValue]; exists {
+				return nil, fmt.Errorf("loop in table __call chain")
+			}
+
+			visited[tableValue] = struct{}{}
 
 			metaCall, exists, err := e.lookupMetamethod(callee, "__call")
 			if err != nil {
@@ -787,7 +846,7 @@ func (e *executor) callFunctionValue(callee Value, arguments []Value) ([]Value, 
 				callArgs := make([]Value, 0, len(arguments)+1)
 				callArgs = append(callArgs, Value{Type: ValueTypeTable, Data: tableValue})
 				callArgs = append(callArgs, arguments...)
-				return e.callFunctionValue(metaCall, callArgs)
+				return e.callFunctionValueWithVisited(metaCall, callArgs, visited)
 			}
 		}
 
@@ -911,12 +970,24 @@ func (e *executor) defineLocal(name string, value Value) {
 func (e *executor) assign(name string, value Value) {
 	for index := len(e.scopes) - 1; index >= 0; index-- {
 		if cell, ok := e.scopes[index][name]; ok {
+			if index == 0 && e.state != nil {
+				e.state.setGlobalValue(name, value)
+				return
+			}
+
 			cell.value = value
 			return
 		}
 	}
 
-	e.scopes[len(e.scopes)-1][name] = &valueCell{value: value}
+	// 未声明名称的普通赋值会回落到全局环境。
+	// 这样函数体里的 `name = value` 不会误写成当前局部作用域临时变量。
+	if e.state != nil {
+		e.state.setGlobalValue(name, value)
+		return
+	}
+
+	e.scopes[0][name] = &valueCell{value: value}
 }
 
 func (e *executor) lookup(name string) (Value, bool) {
@@ -981,7 +1052,7 @@ func (e *executor) evaluateUnaryExpression(expression *ir.UnaryExpression) (Valu
 				return NilValue(), fmt.Errorf("invalid table payload %T", operand.Data)
 			}
 
-			length, err := tableValue.sequenceLength()
+			length, err := tableValue.borderLength()
 			if err != nil {
 				return NilValue(), err
 			}
@@ -1045,19 +1116,21 @@ func (e *executor) evaluateBinaryExpression(expression *ir.BinaryExpression) (Va
 	case "^":
 		return e.evaluateBinaryArithmetic(left, right, expression.Operator, "__pow", math.Pow)
 	case "..":
-		if left.Type == ValueTypeString || left.Type == ValueTypeNumber || right.Type == ValueTypeString || right.Type == ValueTypeNumber {
+		// Lua 5.1 的原生拼接只接受字符串和数字；
+		// 任一侧超出这个范围时，都应该回退到 `__concat` 或直接报错。
+		if isStringLikeValue(left) && isStringLikeValue(right) {
 			return Value{Type: ValueTypeString, Data: valueToString(left) + valueToString(right)}, nil
 		}
 
 		return e.evaluateBinaryMetamethod(left, right, "__concat", fmt.Errorf("operator %q expects string-like operands, got %s and %s", expression.Operator, left.Type, right.Type))
 	case "<":
-		return e.evaluateOrderedComparison(left, right, expression.Operator, "__lt", func(a, b float64) bool { return a < b })
+		return e.evaluateOrderedComparison(left, right, expression.Operator, expression.Operator, "__lt", func(a, b float64) bool { return a < b })
 	case "<=":
-		return e.evaluateOrderedComparison(left, right, expression.Operator, "__le", func(a, b float64) bool { return a <= b })
+		return e.evaluateOrderedComparison(left, right, expression.Operator, expression.Operator, "__le", func(a, b float64) bool { return a <= b })
 	case ">":
-		return e.evaluateOrderedComparison(right, left, expression.Operator, "__lt", func(a, b float64) bool { return a < b })
+		return e.evaluateOrderedComparison(right, left, "<", expression.Operator, "__lt", func(a, b float64) bool { return a < b })
 	case ">=":
-		return e.evaluateOrderedComparison(right, left, expression.Operator, "__le", func(a, b float64) bool { return a <= b })
+		return e.evaluateOrderedComparison(right, left, "<=", expression.Operator, "__le", func(a, b float64) bool { return a <= b })
 	case "==":
 		return e.evaluateEquality(left, right)
 	case "~=":
@@ -1135,19 +1208,73 @@ func (e *executor) evaluateBinaryMetamethod(left, right Value, metamethod string
 	return returnValues[0], nil
 }
 
-// evaluateOrderedComparison 先尝试直接做数值比较，再回退到已支持的比较元方法。
-// 当前主要覆盖 `<`、`<=` 及其派生比较链路。
-func (e *executor) evaluateOrderedComparison(left, right Value, operator string, metamethod string, fn func(float64, float64) bool) (Value, error) {
-	value, err := comparisonBinary(left, right, operator, fn)
+// evaluateSharedBinaryMetamethod 只在两侧共享同一个二元元方法时才执行调用。
+// 这主要用于 Lua 5.1 的比较元方法路径，如 `__lt` / `__le`。
+func (e *executor) evaluateSharedBinaryMetamethod(left, right Value, metamethod string, cause error) (Value, error) {
+	metaFn, exists, err := e.lookupSharedBinaryMetamethod(left, right, metamethod)
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if !exists {
+		if cause == nil {
+			return NilValue(), nil
+		}
+
+		return NilValue(), cause
+	}
+
+	returnValues, err := e.callFunctionValue(metaFn, []Value{left, right})
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if len(returnValues) == 0 {
+		return NilValue(), nil
+	}
+
+	return returnValues[0], nil
+}
+
+// evaluateOrderedComparison 先尝试直接做数字或字符串的有序比较，再回退到已支持的比较元方法。
+// directOperator 表示当前实际执行的基础比较方向，errorOperator 用于保留原始运算符错误文本。
+func (e *executor) evaluateOrderedComparison(left, right Value, directOperator string, errorOperator string, metamethod string, fn func(float64, float64) bool) (Value, error) {
+	value, err := comparisonBinary(left, right, directOperator, errorOperator, fn)
 	if err == nil {
 		return value, nil
 	}
 
-	return e.evaluateBinaryMetamethod(left, right, metamethod, err)
+	if metamethod == "__le" {
+		value, ok, fallbackErr := e.evaluateLessEqualFallback(left, right)
+		if fallbackErr != nil {
+			return NilValue(), fallbackErr
+		}
+
+		if ok {
+			return value, nil
+		}
+	}
+
+	return e.evaluateSharedBinaryMetamethod(left, right, metamethod, err)
+}
+
+// evaluateLessEqualFallback 为 `<=` 提供 Lua 5.1 风格的最小 `__lt` 反向回退。
+// 当 `__le` 缺失时，会尝试计算 `not (right < left)`。
+func (e *executor) evaluateLessEqualFallback(left, right Value) (Value, bool, error) {
+	value, err := e.evaluateSharedBinaryMetamethod(right, left, "__lt", nil)
+	if err != nil {
+		return NilValue(), false, err
+	}
+
+	if value.Type == ValueTypeNil {
+		return NilValue(), false, nil
+	}
+
+	return Value{Type: ValueTypeBoolean, Data: !isTruthy(value)}, true, nil
 }
 
 // evaluateEquality 先执行原始相等性判断，再在需要时回退到最小 `__eq` 元方法路径。
-// 当前元方法相等性主要面向 table 值。
+// 当前元方法相等性主要面向 table 值，并要求两侧共享同一个 `__eq` 元方法。
 func (e *executor) evaluateEquality(left, right Value) (Value, error) {
 	if valuesEqual(left, right) {
 		return Value{Type: ValueTypeBoolean, Data: true}, nil
@@ -1157,16 +1284,77 @@ func (e *executor) evaluateEquality(left, right Value) (Value, error) {
 		return Value{Type: ValueTypeBoolean, Data: false}, nil
 	}
 
-	value, err := e.evaluateBinaryMetamethod(left, right, "__eq", nil)
+	metaFn, exists, err := e.lookupSharedEqualityMetamethod(left, right)
 	if err != nil {
 		return NilValue(), err
 	}
 
-	if value.Type == ValueTypeNil {
+	if !exists {
 		return Value{Type: ValueTypeBoolean, Data: false}, nil
 	}
 
-	return Value{Type: ValueTypeBoolean, Data: isTruthy(value)}, nil
+	returnValues, err := e.callFunctionValue(metaFn, []Value{left, right})
+	if err != nil {
+		return NilValue(), err
+	}
+
+	if len(returnValues) == 0 || returnValues[0].Type == ValueTypeNil {
+		return Value{Type: ValueTypeBoolean, Data: false}, nil
+	}
+
+	return Value{Type: ValueTypeBoolean, Data: isTruthy(returnValues[0])}, nil
+}
+
+// lookupSharedEqualityMetamethod 查找可用于 `__eq` 的共享元方法。
+// 按 Lua 5.1 的最小规则，只有两侧都声明了同一个 `__eq` 值时，才允许触发元方法比较。
+func (e *executor) lookupSharedEqualityMetamethod(left, right Value) (Value, bool, error) {
+	leftMetaFn, leftExists, err := e.lookupMetamethod(left, "__eq")
+	if err != nil {
+		return NilValue(), false, err
+	}
+
+	if !leftExists {
+		return NilValue(), false, nil
+	}
+
+	rightMetaFn, rightExists, err := e.lookupMetamethod(right, "__eq")
+	if err != nil {
+		return NilValue(), false, err
+	}
+
+	if !rightExists || !valuesEqual(leftMetaFn, rightMetaFn) {
+		return NilValue(), false, nil
+	}
+
+	return leftMetaFn, true, nil
+}
+
+// lookupSharedBinaryMetamethod 查找可用于有序比较的共享二元元方法。
+// 按 Lua 5.1 的最小规则，只有两侧都声明了同一个元方法值时，才允许触发比较元方法。
+func (e *executor) lookupSharedBinaryMetamethod(left, right Value, field string) (Value, bool, error) {
+	if left.Type != right.Type || left.Type != ValueTypeTable {
+		return NilValue(), false, nil
+	}
+
+	leftMetaFn, leftExists, err := e.lookupMetamethod(left, field)
+	if err != nil {
+		return NilValue(), false, err
+	}
+
+	if !leftExists {
+		return NilValue(), false, nil
+	}
+
+	rightMetaFn, rightExists, err := e.lookupMetamethod(right, field)
+	if err != nil {
+		return NilValue(), false, err
+	}
+
+	if !rightExists || !valuesEqual(leftMetaFn, rightMetaFn) {
+		return NilValue(), false, nil
+	}
+
+	return leftMetaFn, true, nil
 }
 
 // lookupBinaryMetamethod 按先左后右的顺序查找二元元方法入口。
@@ -1198,13 +1386,28 @@ func numericBinary(left, right Value, operator string, fn func(float64, float64)
 	return Value{Type: ValueTypeNumber, Data: fn(leftNumber, rightNumber)}, nil
 }
 
-func comparisonBinary(left, right Value, operator string, fn func(float64, float64) bool) (Value, error) {
-	leftNumber, err := requireNumber(left, operator)
+func comparisonBinary(left, right Value, directOperator string, errorOperator string, fn func(float64, float64) bool) (Value, error) {
+	if left.Type == ValueTypeString && right.Type == ValueTypeString {
+		leftText, leftOK := left.Data.(string)
+		rightText, rightOK := right.Data.(string)
+		if !leftOK || !rightOK {
+			return NilValue(), fmt.Errorf("invalid string comparison payloads %T and %T", left.Data, right.Data)
+		}
+
+		switch directOperator {
+		case "<":
+			return Value{Type: ValueTypeBoolean, Data: leftText < rightText}, nil
+		case "<=":
+			return Value{Type: ValueTypeBoolean, Data: leftText <= rightText}, nil
+		}
+	}
+
+	leftNumber, err := requireStrictNumber(left, errorOperator)
 	if err != nil {
 		return NilValue(), err
 	}
 
-	rightNumber, err := requireNumber(right, operator)
+	rightNumber, err := requireStrictNumber(right, errorOperator)
 	if err != nil {
 		return NilValue(), err
 	}
@@ -1222,7 +1425,37 @@ func numericForContinues(current float64, limit float64, step float64) bool {
 	return current >= limit
 }
 
+// requireNumber 按 Lua 5.1 的最小数值强转规则读取一个可参与数值运算的值。
+// 当前会接受原生 number，以及可被基础浮点解析接受的字符串。
 func requireNumber(value Value, operator string) (float64, error) {
+	switch value.Type {
+	case ValueTypeNumber:
+		number, ok := value.Data.(float64)
+		if !ok {
+			return 0, fmt.Errorf("operator %q received invalid number payload %T", operator, value.Data)
+		}
+
+		return number, nil
+	case ValueTypeString:
+		text, ok := value.Data.(string)
+		if !ok {
+			return 0, fmt.Errorf("operator %q received invalid string payload %T", operator, value.Data)
+		}
+
+		number, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+		if err != nil {
+			return 0, fmt.Errorf("operator %q expects number operand, got %s", operator, value.Type)
+		}
+
+		return number, nil
+	default:
+		return 0, fmt.Errorf("operator %q expects number operand, got %s", operator, value.Type)
+	}
+}
+
+// requireStrictNumber 只接受原生 number，不做字符串到数值的强转。
+// 关系比较会用它保留 Lua 5.1“数字和字符串不能混比”的最小规则。
+func requireStrictNumber(value Value, operator string) (float64, error) {
 	if value.Type != ValueTypeNumber {
 		return 0, fmt.Errorf("operator %q expects number operand, got %s", operator, value.Type)
 	}
@@ -1233,6 +1466,12 @@ func requireNumber(value Value, operator string) (float64, error) {
 	}
 
 	return number, nil
+}
+
+// isStringLikeValue 判断当前值是否能直接参与 Lua 5.1 的原生字符串拼接。
+// 当前只把字符串和数字视为可直接拼接的基础值类型。
+func isStringLikeValue(value Value) bool {
+	return value.Type == ValueTypeString || value.Type == ValueTypeNumber
 }
 
 func parseNumberLiteral(literal string) (float64, error) {

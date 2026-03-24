@@ -133,19 +133,46 @@ func (t *table) firstEntry() (Value, Value, bool, error) {
 	return t.keys[first], t.entries[first], true, nil
 }
 
-// sequenceLength 返回从索引 1 开始的连续数组段长度。
-// 这对应当前实现里 `#table` 和 `table.getn` 共享的最小 sequence 语义。
-func (t *table) sequenceLength() (int, error) {
+// borderLength 返回当前 table 的最小正整数边界长度。
+// 当前实现会在存在索引 `1` 时返回表中最大的正整数整数 key，
+// 让 `#table` / `table.getn` 不再在遇到第一个空洞时立刻停下。
+// 这比“连续前缀长度”更接近 Lua 5.1，但仍不是完整的长度语义。
+func (t *table) borderLength() (int, error) {
 	if t == nil {
 		return 0, fmt.Errorf("measure nil table")
 	}
 
-	end, err := tableSequenceEnd(t, 1)
+	firstValue, exists, err := t.get(Value{Type: ValueTypeNumber, Data: float64(1)})
 	if err != nil {
 		return 0, err
 	}
 
-	return end, nil
+	if !exists || firstValue.Type == ValueTypeNil {
+		return 0, nil
+	}
+
+	maximum := 1
+	for _, key := range t.keys {
+		if key.Type != ValueTypeNumber {
+			continue
+		}
+
+		number, ok := key.Data.(float64)
+		if !ok {
+			return 0, fmt.Errorf("invalid numeric table key payload %T", key.Data)
+		}
+
+		if !isPositiveInteger(number) {
+			continue
+		}
+
+		index := int(number)
+		if index > maximum {
+			maximum = index
+		}
+	}
+
+	return maximum, nil
 }
 
 // maxNumericKey 返回当前 table 中存在的最大数值 key。
@@ -190,10 +217,35 @@ func (t *table) deleteKey(storageKey string) {
 	}
 }
 
+// tableKey 把运行时 key 归一化成当前底层存储使用的字符串 key。
+// 基础标量值按值编码；table 和 function 则按对象身份编码，避免不同对象因文本相同而撞 key。
 func tableKey(key Value) (string, error) {
 	if key.Type == ValueTypeNil {
 		return "", fmt.Errorf("table key cannot be nil")
 	}
 
-	return fmt.Sprintf("%s:%s", key.Type, valueToString(key)), nil
+	return fmt.Sprintf("%s:%s", key.Type, tableKeyData(key)), nil
+}
+
+// tableKeyData 返回当前 key 对应的稳定底层编码片段。
+// 这里会对 table / function 使用指针身份，保证对象键按引用区分，而不是按调试文本区分。
+func tableKeyData(key Value) string {
+	switch key.Type {
+	case ValueTypeTable:
+		return fmt.Sprintf("%p", key.Data)
+	case ValueTypeFunction:
+		return fmt.Sprintf("%p", key.Data)
+	default:
+		return valueToString(key)
+	}
+}
+
+// isPositiveInteger 判断一个数值 key 是否是可参与当前长度边界计算的正整数。
+func isPositiveInteger(number float64) bool {
+	if number < 1 {
+		return false
+	}
+
+	index := int(number)
+	return float64(index) == number
 }

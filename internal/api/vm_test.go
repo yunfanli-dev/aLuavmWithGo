@@ -107,6 +107,74 @@ func TestRegisterFunctionExposesGoHandler(t *testing.T) {
 	}
 }
 
+func TestRegisterPreloadFunctionExposesHostModule(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterPreloadFunction("hostmod", func(args []Value) ([]Value, error) {
+		if len(args) != 1 || args[0].Type != "string" || args[0].Data != "hostmod" {
+			t.Fatalf("unexpected preload args: %#v", args)
+		}
+
+		return []Value{{Type: "number", Data: float64(42)}}, nil
+	})
+	if err != nil {
+		t.Fatalf("register preload function: %v", err)
+	}
+
+	if err := vm.ExecString("return require(\"hostmod\")"); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 1 || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
+func TestRegisterLoadedModuleExposesCachedHostValue(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterLoadedModule("cached", Value{Type: "string", Data: "ready"})
+	if err != nil {
+		t.Fatalf("register loaded module: %v", err)
+	}
+
+	if err := vm.ExecString(`return require("cached")`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 1 || returnValues[0].Type != "string" || returnValues[0].Data != "ready" {
+		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
+func TestRegisterSearcherFunctionExposesHostSearcher(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterSearcherFunction(func(moduleName string) (ModuleLoader, string, error) {
+		if moduleName != "virtual" {
+			return nil, "\n\tno host searcher match", nil
+		}
+
+		return func(moduleName string) ([]Value, error) {
+			return []Value{{Type: "string", Data: "host:" + moduleName}}, nil
+		}, "", nil
+	})
+	if err != nil {
+		t.Fatalf("register searcher function: %v", err)
+	}
+
+	if err := vm.ExecString(`return require("virtual")`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 1 || returnValues[0].Type != "string" || returnValues[0].Data != "host:virtual" {
+		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
 func TestBuiltinPrintWritesToConfiguredOutput(t *testing.T) {
 	vm := NewVM()
 	var output bytes.Buffer

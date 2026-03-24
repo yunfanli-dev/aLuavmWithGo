@@ -9,7 +9,7 @@
   参考：[Lua51SyntaxSupport.md](../Lua51SyntaxSupport.md)
 
 - `#` 对 table 的完整长度语义仍未实现
-  说明：当前已支持字符串长度，也已支持从索引 `1` 开始的连续数组段长度；但更完整的 Lua 5.1 table 长度语义仍未补齐。
+  说明：当前已支持字符串长度，也已支持“存在索引 `1` 时按当前表中的最大正整数整数 key 取边界长度”的最小 table 长度行为；但更完整的 Lua 5.1 table 长度语义仍未补齐。
   影响：部分依赖 table 长度的 Lua 5.1 代码仍不能按标准行为运行。
 
 - generic `for` 仍主要围绕 `next` / `pairs` / `ipairs`
@@ -18,16 +18,16 @@
 ## 运行时与标准库空白
 
 - `math` 库仍只覆盖较小子集
-  说明：当前已支持 `pi` / `huge`、基础取整、`modf`、`fmod`、`frexp` / `ldexp`、角度/弧度转换、极值、随机、指数、自然/十进制对数，以及基础三角/反三角函数、`atan2`、`sinh`、`cosh` 和 `tanh`，但离完整 Lua 5.1 数学库仍有距离。
+  说明：当前已支持 `pi` / `huge`、基础取整、`modf`、`mod` / `fmod`、`frexp` / `ldexp`、角度/弧度转换、极值、随机、指数、自然/十进制对数，以及基础三角/反三角函数、`atan2`、`sinh`、`cosh` 和 `tanh`，但离完整 Lua 5.1 数学库仍有距离。
 
 - `string` 库仍只覆盖较小子集
-  说明：当前已支持长度、纯文本 `find` / `match` / `gmatch` / `gsub`、最小 `format`、截取、大小写、重复、反转、字节提取和按字节组装；其中 `gsub` 已支持字符串 / table / function 替换器，`format` 已支持 `%c`、`%o`、`%u`、`%x`、`%X`、`%e`、`%E`、`%g`、`%G` 等少量高频格式符，但仍缺少 Lua pattern 版 `find` / `match` / `gmatch` / `gsub`、capture 语义以及更完整格式化语义。
+  说明：当前已支持长度、纯文本 `find` / `match` / `gfind` / `gmatch` / `gsub`、最小 `format`、截取、大小写、重复、反转、字节提取和按字节组装；其中 `gsub` 已支持字符串 / table / function 替换器，`format` 已支持 `%c`、`%o`、`%u`、`%x`、`%X`、`%e`、`%E`、`%g`、`%G` 等少量高频格式符，但仍缺少 Lua pattern 版 `find` / `match` / `gfind` / `gmatch` / `gsub`、capture 语义以及更完整格式化语义。
 
 - `table` 库仍只覆盖较小子集
-  说明：当前已支持 `getn`、`maxn`、`foreach`、`foreachi`、`insert`、`remove`、`concat`、`sort`，仍未补齐更完整的序列表辅助能力。
+  说明：当前已支持 `getn`、`maxn`、`foreach`、`foreachi`、`insert`、`remove`、`concat`、`sort`，其中 `concat` 已可复用现有字符串化逻辑处理带 `__tostring` 的值，但仍未补齐更完整的序列表辅助能力。
 
 - upvalue、闭包和 metatable 仍未完全对齐 Lua 5.1
-  说明：当前已具备最小可用链路，但更多边界行为和完整兼容性仍未系统补齐。
+  说明：当前已具备最小可用链路，也已补上 `__index` / `__newindex` / `__call` 的明显链式环基础报错路径，并把 `__eq`、`__lt`、`<=` / `>=` 的最小比较规则收口到更接近 Lua 5.1 的形态，但更多边界行为和完整兼容性仍未系统补齐。
 
 ## 执行安全空白
 
@@ -38,8 +38,8 @@
 
 ## 验证与整理空白
 
-- 手工样例仍只有两份
-  说明：当前已覆盖运行时主链路和多返回值主链路，但对更多标准库和 metatable 组合场景还不够系统。
+- 手工样例仍较少
+  说明：当前已覆盖运行时主链路、多返回值主链路，以及 table / metatable、generic `for` 两份专项样例，但对更多标准库和 metatable 组合场景还不够系统。
 
 - 回归检查清单已建立，但还不是完整矩阵
   说明：当前主要按关键能力点和关键输出片段判定，尚未细化到逐能力的更完整通过标准。

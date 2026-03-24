@@ -3,6 +3,7 @@ package vm
 import (
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -13,6 +14,9 @@ func (s *State) registerBuiltins() {
 	s.registerBuiltinType()
 	s.registerBuiltinToString()
 	s.registerBuiltinToNumber()
+	s.registerBuiltinPackageLibrary()
+	s.registerBuiltinModule()
+	s.registerBuiltinRequire()
 	s.registerBuiltinSelect()
 	s.registerBuiltinUnpack()
 	s.registerBuiltinAssert()
@@ -30,6 +34,196 @@ func (s *State) registerBuiltins() {
 	s.registerBuiltinTableLibrary()
 	s.registerBuiltinMathLibrary()
 	s.registerBuiltinStringLibrary()
+}
+
+// registerBuiltinPackageLibrary 注册最小 `package` 库入口。
+// 当前暴露 `package.loaded`、`package.preload`、`package.path`、`package.loaders`
+// 、`package.seeall` 和最小 `package.searchpath`，供最小 `require` / `module` 复用。
+func (s *State) registerBuiltinPackageLibrary() {
+	library, err := s.ensureLibraryTable("package")
+	if err != nil {
+		return
+	}
+
+	loaded := newTable()
+	_ = library.set(Value{Type: ValueTypeString, Data: "loaded"}, Value{
+		Type: ValueTypeTable,
+		Data: loaded,
+	})
+	preload := newTable()
+	_ = library.set(Value{Type: ValueTypeString, Data: "preload"}, Value{
+		Type: ValueTypeTable,
+		Data: preload,
+	})
+	_ = library.set(Value{Type: ValueTypeString, Data: "path"}, Value{
+		Type: ValueTypeString,
+		Data: "?.lua;?/init.lua",
+	})
+	loaders := newTable()
+	_ = loaders.set(Value{Type: ValueTypeNumber, Data: float64(1)}, Value{
+		Type: ValueTypeFunction,
+		Data: &nativeFunction{name: "package.loaders.preload", contextualImpl: s.packagePreloadSearcher},
+	})
+	_ = loaders.set(Value{Type: ValueTypeNumber, Data: float64(2)}, Value{
+		Type: ValueTypeFunction,
+		Data: &nativeFunction{name: "package.loaders.file", contextualImpl: s.packageFileSearcher},
+	})
+	_ = library.set(Value{Type: ValueTypeString, Data: "loaders"}, Value{
+		Type: ValueTypeTable,
+		Data: loaders,
+	})
+	_ = library.set(Value{Type: ValueTypeString, Data: "searchpath"}, Value{
+		Type: ValueTypeFunction,
+		Data: &nativeFunction{name: "package.searchpath", fn: s.packageSearchPath},
+	})
+	_ = library.set(Value{Type: ValueTypeString, Data: "seeall"}, Value{
+		Type: ValueTypeFunction,
+		Data: &nativeFunction{name: "package.seeall", fn: s.packageSeeAll},
+	})
+}
+
+// packageSearchPath 实现最小 `package.searchpath`。
+// 当前会复用现有模块候选路径展开规则，并返回首个命中的文件或 Lua 风格错误文本。
+func (s *State) packageSearchPath(args []Value) ([]Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("package.searchpath expects at least 2 arguments")
+	}
+
+	moduleName, err := requireStringArg(args[0], "package.searchpath")
+	if err != nil {
+		return nil, err
+	}
+
+	pathTemplate, err := requireStringArg(args[1], "package.searchpath")
+	if err != nil {
+		return nil, err
+	}
+
+	separator := "."
+	if len(args) > 2 {
+		separator, err = requireStringArg(args[2], "package.searchpath")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	replacement := string(os.PathSeparator)
+	if len(args) > 3 {
+		replacement, err = requireStringArg(args[3], "package.searchpath")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	candidates := s.resolveModuleCandidates(moduleName, pathTemplate, separator, replacement)
+	var builder strings.Builder
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return []Value{{Type: ValueTypeString, Data: candidate}}, nil
+		}
+
+		builder.WriteString("\n\tno file '")
+		builder.WriteString(candidate)
+		builder.WriteString("'")
+	}
+
+	return []Value{NilValue(), {Type: ValueTypeString, Data: builder.String()}}, nil
+}
+
+// packageSeeAll 实现最小 `package.seeall`。
+// 当前会把模块表的 metatable `__index` 指向 `_G`，让模块表能回退访问全局环境。
+func (s *State) packageSeeAll(args []Value) ([]Value, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("package.seeall expects 1 argument")
+	}
+
+	moduleTable, err := requireBuiltinTable(args[0], "package.seeall")
+	if err != nil {
+		return nil, err
+	}
+
+	metatable := moduleTable.getMetatable()
+	if metatable == nil {
+		metatable = newTable()
+		moduleTable.setMetatable(metatable)
+	}
+
+	if err := metatable.set(Value{Type: ValueTypeString, Data: "__index"}, Value{
+		Type: ValueTypeTable,
+		Data: s.globalEnv,
+	}); err != nil {
+		return nil, err
+	}
+
+	return []Value{args[0]}, nil
+}
+
+// registerBuiltinModule 注册最小 `module(...)` 兼容 helper。
+// 当前只负责创建/复用模块表、同步 `package.loaded` 和全局路径，并执行可选 setup callback；
+// 它不会像 Lua 5.1 老实现那样切换当前 chunk 的全局环境。
+func (s *State) registerBuiltinModule() {
+	_ = s.registerContextualFunction("module", func(exec *executor, args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("module expects at least 1 argument")
+		}
+
+		moduleName, err := requireStringArg(args[0], "module")
+		if err != nil {
+			return nil, err
+		}
+
+		moduleTable, err := s.ensureModuleTable(moduleName)
+		if err != nil {
+			return nil, err
+		}
+
+		moduleValue := Value{Type: ValueTypeTable, Data: moduleTable}
+		if err := moduleTable.set(Value{Type: ValueTypeString, Data: "_M"}, moduleValue); err != nil {
+			return nil, err
+		}
+		if err := moduleTable.set(Value{Type: ValueTypeString, Data: "_NAME"}, Value{
+			Type: ValueTypeString,
+			Data: moduleName,
+		}); err != nil {
+			return nil, err
+		}
+		if err := moduleTable.set(Value{Type: ValueTypeString, Data: "_PACKAGE"}, Value{
+			Type: ValueTypeString,
+			Data: modulePackagePrefix(moduleName),
+		}); err != nil {
+			return nil, err
+		}
+
+		for _, option := range args[1:] {
+			if _, err := exec.callFunctionValue(option, []Value{moduleValue}); err != nil {
+				return nil, err
+			}
+		}
+
+		return []Value{moduleValue}, nil
+	})
+}
+
+// registerBuiltinRequire 注册最小 `require` 模块加载入口。
+// 当前实现会复用 `State` 的文件解析、缓存和循环检测逻辑。
+func (s *State) registerBuiltinRequire() {
+	_ = s.registerContextualFunction("require", func(exec *executor, args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("require expects 1 argument")
+		}
+
+		if args[0].Type != ValueTypeString {
+			return nil, fmt.Errorf("require expects string module name")
+		}
+
+		moduleValue, err := s.requireModule(exec.ctx, args[0].Data.(string))
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{moduleValue}, nil
+	})
 }
 
 // registerBuiltinType 注册最小 `type` 内建函数。
@@ -159,7 +353,7 @@ func (s *State) registerBuiltinUnpack() {
 
 			endIndex = end
 		} else {
-			end, err := tableSequenceEnd(tableValue, startIndex)
+			end, err := tableValue.borderLength()
 			if err != nil {
 				return nil, err
 			}
@@ -270,6 +464,7 @@ func (s *State) registerBuiltinMathLibrary() {
 	s.registerMathRad()
 	s.registerMathFrexp()
 	s.registerMathFMod()
+	s.registerMathMod()
 	s.registerMathLdexp()
 	s.registerMathMax()
 	s.registerMathMin()
@@ -304,6 +499,7 @@ func (s *State) registerMathConstants() {
 func (s *State) registerBuiltinStringLibrary() {
 	s.registerStringFind()
 	s.registerStringFormat()
+	s.registerStringGFind()
 	s.registerStringGSub()
 	s.registerStringGMatch()
 	s.registerStringMatch()
@@ -318,7 +514,7 @@ func (s *State) registerBuiltinStringLibrary() {
 }
 
 // registerTableGetN 注册最小 `table.getn`。
-// 它返回从索引 1 开始的连续数组段长度，与当前 `#table` 语义保持一致。
+// 它返回当前实现使用的正整数边界长度，与 `#table` 保持一致。
 func (s *State) registerTableGetN() {
 	_ = s.registerTableLibraryFunction("getn", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -330,12 +526,12 @@ func (s *State) registerTableGetN() {
 			return nil, err
 		}
 
-		endIndex, err := tableSequenceEnd(tableValue, 1)
+		length, err := tableValue.borderLength()
 		if err != nil {
 			return nil, err
 		}
 
-		return []Value{{Type: ValueTypeNumber, Data: float64(endIndex)}}, nil
+		return []Value{{Type: ValueTypeNumber, Data: float64(length)}}, nil
 	})
 }
 
@@ -374,10 +570,6 @@ func (s *State) registerTableForeach() {
 			return nil, err
 		}
 
-		if args[1].Type != ValueTypeFunction {
-			return nil, fmt.Errorf("table.foreach expects function callback")
-		}
-
 		key, value, ok, err := tableValue.firstEntry()
 		if err != nil {
 			return nil, err
@@ -404,7 +596,8 @@ func (s *State) registerTableForeach() {
 }
 
 // registerTableForeachI 注册最小 `table.foreachi`。
-// 当前按连续数组段从 1 开始顺序遍历，并支持在回调返回非 nil 时提前结束。
+// 当前按从 1 到边界长度的顺序遍历，并会跳过空洞；
+// 这样它默认使用的终点和当前 `#table` / `table.getn` / `unpack` 保持一致。
 func (s *State) registerTableForeachI() {
 	_ = s.registerContextualLibraryFunction("table", "foreachi", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -416,11 +609,7 @@ func (s *State) registerTableForeachI() {
 			return nil, err
 		}
 
-		if args[1].Type != ValueTypeFunction {
-			return nil, fmt.Errorf("table.foreachi expects function callback")
-		}
-
-		endIndex, err := tableSequenceEnd(tableValue, 1)
+		endIndex, err := tableValue.borderLength()
 		if err != nil {
 			return nil, err
 		}
@@ -451,7 +640,7 @@ func (s *State) registerTableForeachI() {
 }
 
 // registerTableInsert 注册 `table.insert`。
-// 当前实现基于最小 sequence 语义，在连续数组段内完成插入和后移。
+// 当前默认尾部位置会复用现有边界长度，并沿现有最小搬移逻辑完成插入和后移。
 func (s *State) registerTableInsert() {
 	_ = s.registerTableLibraryFunction("insert", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -463,7 +652,7 @@ func (s *State) registerTableInsert() {
 			return nil, err
 		}
 
-		endIndex, err := tableSequenceEnd(tableValue, 1)
+		endIndex, err := tableValue.borderLength()
 		if err != nil {
 			return nil, err
 		}
@@ -511,7 +700,7 @@ func (s *State) registerTableInsert() {
 }
 
 // registerTableRemove 注册 `table.remove`。
-// 当前实现按最小 sequence 语义移除元素，并把后续元素左移。
+// 当前默认尾部位置会复用现有边界长度，并按现有最小搬移逻辑把后续元素左移。
 func (s *State) registerTableRemove() {
 	_ = s.registerTableLibraryFunction("remove", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -523,7 +712,7 @@ func (s *State) registerTableRemove() {
 			return nil, err
 		}
 
-		endIndex, err := tableSequenceEnd(tableValue, 1)
+		endIndex, err := tableValue.borderLength()
 		if err != nil {
 			return nil, err
 		}
@@ -583,9 +772,9 @@ func (s *State) registerTableRemove() {
 }
 
 // registerTableConcat 注册 `table.concat`。
-// 当前实现只面向最小 sequence 语义，并要求被拼接值可转成字符串。
+// 当前默认终点会复用现有边界长度语义，并允许复用现有字符串化逻辑拼接元素。
 func (s *State) registerTableConcat() {
-	_ = s.registerTableLibraryFunction("concat", func(args []Value) ([]Value, error) {
+	_ = s.registerContextualLibraryFunction("table", "concat", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 1 {
 			return nil, fmt.Errorf("table.concat expects at least 1 argument")
 		}
@@ -623,7 +812,7 @@ func (s *State) registerTableConcat() {
 
 			endIndex = end
 		} else {
-			end, err := tableSequenceEnd(tableValue, startIndex)
+			end, err := tableValue.borderLength()
 			if err != nil {
 				return nil, err
 			}
@@ -647,11 +836,12 @@ func (s *State) registerTableConcat() {
 				return nil, fmt.Errorf("table.concat encountered nil value")
 			}
 
-			if value.Type != ValueTypeString && value.Type != ValueTypeNumber {
-				return nil, fmt.Errorf("table.concat expects stringable sequence values")
+			text, err := exec.valueToString(value)
+			if err != nil {
+				return nil, err
 			}
 
-			parts = append(parts, valueToString(value))
+			parts = append(parts, text)
 		}
 
 		return []Value{{Type: ValueTypeString, Data: strings.Join(parts, separator)}}, nil
@@ -659,7 +849,7 @@ func (s *State) registerTableConcat() {
 }
 
 // registerTableSort 注册 `table.sort`。
-// 当前实现只排序最小 sequence 段，并支持可选比较函数。
+// 当前默认排序终点会复用现有边界长度，并支持可选比较函数。
 func (s *State) registerTableSort() {
 	_ = s.registerContextualLibraryFunction("table", "sort", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -674,15 +864,11 @@ func (s *State) registerTableSort() {
 		var comparator Value
 		hasComparator := false
 		if len(args) > 1 {
-			if args[1].Type != ValueTypeFunction {
-				return nil, fmt.Errorf("table.sort expects function comparator")
-			}
-
 			comparator = args[1]
 			hasComparator = true
 		}
 
-		endIndex, err := tableSequenceEnd(tableValue, 1)
+		endIndex, err := tableValue.borderLength()
 		if err != nil {
 			return nil, err
 		}
@@ -841,6 +1027,28 @@ func (s *State) registerMathFMod() {
 		}
 
 		right, err := requireNumber(args[1], "math.fmod")
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: math.Mod(left, right)}}, nil
+	})
+}
+
+// registerMathMod 注册 `math.mod`，用于兼容 Lua 5.1 中旧的余数函数入口。
+// 当前实现直接复用 `math.fmod` 的最小浮点余数语义。
+func (s *State) registerMathMod() {
+	_ = s.registerLibraryFunction("math", "mod", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("math.mod expects 2 arguments")
+		}
+
+		left, err := requireNumber(args[0], "math.mod")
+		if err != nil {
+			return nil, err
+		}
+
+		right, err := requireNumber(args[1], "math.mod")
 		if err != nil {
 			return nil, err
 		}
@@ -1267,40 +1475,19 @@ func (s *State) registerMathAcos() {
 	})
 }
 
+// registerStringGFind 注册兼容别名 `string.gfind`。
+// Lua 5.1 中该名字已被 `gmatch` 取代，但补一个最小别名有助于兼容旧脚本。
+func (s *State) registerStringGFind() {
+	_ = s.registerLibraryFunction("string", "gfind", func(args []Value) ([]Value, error) {
+		return s.buildStringGMatchIterator(args, "string.gfind")
+	})
+}
+
 // registerStringGMatch 注册最小 `string.gmatch`。
 // 当前只支持纯文本匹配，并通过闭包迭代器逐次返回匹配到的完整片段。
 func (s *State) registerStringGMatch() {
 	_ = s.registerLibraryFunction("string", "gmatch", func(args []Value) ([]Value, error) {
-		if len(args) < 2 {
-			return nil, fmt.Errorf("string.gmatch expects at least 2 arguments")
-		}
-
-		text, err := requireStringArg(args[0], "string.gmatch")
-		if err != nil {
-			return nil, err
-		}
-
-		pattern, err := requireStringArg(args[1], "string.gmatch")
-		if err != nil {
-			return nil, err
-		}
-
-		startIndex := 1
-		if len(args) > 2 {
-			start, err := builtinInteger(args[2], "string.gmatch")
-			if err != nil {
-				return nil, err
-			}
-
-			startIndex = start
-		}
-
-		searchStart := normalizeStringStart(len(text), startIndex)
-
-		// TODO: 后续补齐 Lua 5.1 的 pattern / capture 匹配能力，
-		// 当前 `string.gmatch` 始终按纯文本子串迭代处理。
-		iterator := makeStringGMatchIterator(text, pattern, searchStart)
-		return []Value{{Type: ValueTypeFunction, Data: iterator}}, nil
+		return s.buildStringGMatchIterator(args, "string.gmatch")
 	})
 }
 
@@ -1759,7 +1946,7 @@ func (e *executor) tableSortLess(left, right Value, comparator Value, hasCompara
 		return isTruthy(returnValues[0]), nil
 	}
 
-	result, err := e.evaluateOrderedComparison(left, right, "<", "__lt", func(a, b float64) bool { return a < b })
+	result, err := e.evaluateOrderedComparison(left, right, "<", "<", "__lt", func(a, b float64) bool { return a < b })
 	if err != nil {
 		return false, err
 	}
@@ -1887,6 +2074,41 @@ func replaceEmptyStringMatches(exec *executor, text string, pattern string, repl
 	}
 
 	return builder.String(), replacements, nil
+}
+
+// buildStringGMatchIterator 解析 `string.gmatch` / `string.gfind` 共用参数并构造迭代器。
+// 当前只支持纯文本匹配和 Lua 风格起始下标，不涉及 pattern / capture。
+func (s *State) buildStringGMatchIterator(args []Value, name string) ([]Value, error) {
+	if len(args) < 2 {
+		return nil, fmt.Errorf("%s expects at least 2 arguments", name)
+	}
+
+	text, err := requireStringArg(args[0], name)
+	if err != nil {
+		return nil, err
+	}
+
+	pattern, err := requireStringArg(args[1], name)
+	if err != nil {
+		return nil, err
+	}
+
+	startIndex := 1
+	if len(args) > 2 {
+		start, err := builtinInteger(args[2], name)
+		if err != nil {
+			return nil, err
+		}
+
+		startIndex = start
+	}
+
+	searchStart := normalizeStringStart(len(text), startIndex)
+
+	// TODO: 后续补齐 Lua 5.1 的 pattern / capture 匹配能力，
+	// 当前 `string.gmatch` / `string.gfind` 始终按纯文本子串迭代处理。
+	iterator := makeStringGMatchIterator(text, pattern, searchStart)
+	return []Value{{Type: ValueTypeFunction, Data: iterator}}, nil
 }
 
 // makeStringGMatchIterator 构造一个最小 `string.gmatch` 纯文本迭代器。
@@ -2103,7 +2325,7 @@ func (s *State) ensureLibraryTable(name string) (*table, error) {
 	}
 
 	library := newTable()
-	s.globals[name] = &valueCell{value: Value{Type: ValueTypeTable, Data: library}}
+	s.setGlobalValue(name, Value{Type: ValueTypeTable, Data: library})
 	return library, nil
 }
 
@@ -2255,13 +2477,6 @@ func (s *State) registerBuiltinPCall() {
 		}
 
 		callable := args[0]
-		if callable.Type != ValueTypeFunction {
-			return []Value{
-				{Type: ValueTypeBoolean, Data: false},
-				{Type: ValueTypeString, Data: "attempt to call non-function value"},
-			}, nil
-		}
-
 		returnValues, err := exec.callFunctionValue(callable, args[1:])
 		if err != nil {
 			return []Value{
@@ -2297,20 +2512,7 @@ func (s *State) registerBuiltinXPCall() {
 		}
 
 		callable := args[0]
-		if callable.Type != ValueTypeFunction {
-			return []Value{
-				{Type: ValueTypeBoolean, Data: false},
-				{Type: ValueTypeString, Data: "attempt to call non-function value"},
-			}, nil
-		}
-
 		handler := args[1]
-		if handler.Type != ValueTypeFunction {
-			return []Value{
-				{Type: ValueTypeBoolean, Data: false},
-				{Type: ValueTypeString, Data: "error handler must be a function"},
-			}, nil
-		}
 
 		returnValues, err := exec.callFunctionValue(callable, nil)
 		if err != nil {
@@ -2425,6 +2627,14 @@ func (s *State) registerBuiltinRawGet() {
 			return nil, fmt.Errorf("invalid table payload %T", args[0].Data)
 		}
 
+		if s.isGlobalEnv(tableValue) && args[1].Type == ValueTypeString {
+			if value, ok := s.lookupGlobalValue(args[1].Data.(string)); ok {
+				return []Value{value}, nil
+			}
+
+			return []Value{NilValue()}, nil
+		}
+
 		value, exists, err := tableValue.get(args[1])
 		if err != nil {
 			return nil, err
@@ -2453,6 +2663,11 @@ func (s *State) registerBuiltinRawSet() {
 		tableValue, ok := args[0].Data.(*table)
 		if !ok {
 			return nil, fmt.Errorf("invalid table payload %T", args[0].Data)
+		}
+
+		if s.isGlobalEnv(tableValue) && args[1].Type == ValueTypeString {
+			s.setGlobalValue(args[1].Data.(string), args[2])
+			return []Value{args[0]}, nil
 		}
 
 		if err := tableValue.set(args[1], args[2]); err != nil {

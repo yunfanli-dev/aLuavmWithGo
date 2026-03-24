@@ -7,6 +7,14 @@ import (
 	"github.com/yunfanli-dev/aLuavmWithGo/internal/vm"
 )
 
+// ModuleLoader 描述一个宿主侧模块 loader。
+// 它会在 searcher 命中后被 `require` 调用，并接收当前模块名。
+type ModuleLoader func(moduleName string) ([]Value, error)
+
+// ModuleSearcher 描述一个宿主侧模块 searcher。
+// 命中时返回 loader；未命中时返回一段可拼进 `require` 错误文本的 message。
+type ModuleSearcher func(moduleName string) (ModuleLoader, string, error)
+
 // VM 是提供给 Go 宿主使用的高层入口。
 // 它把内部运行时状态封装起来，对外暴露脚本执行、宿主函数注册和运行参数配置等能力。
 type VM struct {
@@ -70,6 +78,35 @@ func (v *VM) ExecFileWithContext(ctx context.Context, path string) error {
 func (v *VM) RegisterFunction(name string, fn func(args []Value) ([]Value, error)) error {
 	return v.state.RegisterFunction(name, func(args []vm.Value) ([]vm.Value, error) {
 		return fn(args)
+	})
+}
+
+// RegisterPreloadFunction 把一个 Go 宿主函数注册到 Lua `package.preload`。
+// 注册后脚本可以通过 `require(name)` 直接加载这份宿主提供的内存模块。
+func (v *VM) RegisterPreloadFunction(name string, fn func(args []Value) ([]Value, error)) error {
+	return v.state.RegisterPreloadFunction(name, func(args []vm.Value) ([]vm.Value, error) {
+		return fn(args)
+	})
+}
+
+// RegisterLoadedModule 直接把一个固定模块值注册到 Lua `package.loaded`。
+// 注册后脚本侧 `require(name)` 会直接返回这份缓存值。
+func (v *VM) RegisterLoadedModule(name string, value Value) error {
+	return v.state.RegisterLoadedModule(name, value)
+}
+
+// RegisterSearcherFunction 把一个 Go 宿主 searcher 注册到 Lua `package.loaders`。
+// 注册后，`require` 会按当前顺序调用它，让宿主可以参与模块解析。
+func (v *VM) RegisterSearcherFunction(searcher ModuleSearcher) error {
+	return v.state.RegisterSearcherFunction(func(moduleName string) (vm.ModuleLoader, string, error) {
+		loader, message, err := searcher(moduleName)
+		if err != nil || loader == nil {
+			return nil, message, err
+		}
+
+		return func(moduleName string) ([]vm.Value, error) {
+			return loader(moduleName)
+		}, message, nil
 	})
 }
 

@@ -15,6 +15,8 @@
 - `examples/runtime_showcase.lua` 和 `examples/multivalue_showcase.lua` 当前都已接入 CLI 进程级集成测试，关键输出会被自动回归校验。
 - `test3.lua` 当前也已接入 CLI 进程级集成测试，自动校验 `iterations`、`sum` 和 `elapsed_ms` 输出形状，但不会把耗时数值写死。
 - `test.lua` 和 `test2.lua` 当前也已接入 CLI 进程级集成测试，分别覆盖基础方法调用链路，以及闭包、`pcall`、`ipairs`、metatable 组合链路。
+- `examples/table_metatable_showcase.lua` 当前也已接入 CLI 进程级集成测试，覆盖对象 key、`rawget` / `rawset` 和 `__index` / `__newindex` table 回退链路。
+- `examples/generic_for_showcase.lua` 当前也已接入 CLI 进程级集成测试，覆盖自定义 iterator 三元组和 `string.gmatch` 接入 generic `for` 的链路。
 - 运行 `go run ./cmd/aluavm ./test3.lua` 做一遍基础循环性能脚本手工回归。
 - 运行 `go run ./cmd/aluavm ./examples/runtime_showcase.lua` 做一遍运行时主链路手工回归。
 - 运行 `go run ./cmd/aluavm ./examples/multivalue_showcase.lua` 做一遍多返回值与错误处理手工回归。
@@ -30,7 +32,7 @@
 - 如果需要验证自动化 CLI 集成测试，可运行 `go test ./cmd/aluavm`，关注 helper 子进程用例是否仍能覆盖真实进程级 stdout、stderr 和 exit code。
 - 如果需要验证自动化样例回归，可运行 `go test ./cmd/aluavm`，关注 `runtime_showcase.lua` 和 `multivalue_showcase.lua` 的关键输出断言是否通过。
 - 如果需要验证自动化 `test3.lua` 回归，可运行 `go test ./cmd/aluavm`，关注 `iterations	1000`、`sum	500500` 和 `elapsed_ms` 行是否通过断言。
-- 如果需要验证自动化 `test.lua` / `test2.lua` 回归，可运行 `go test ./cmd/aluavm`，关注基础方法调用输出和闭包 / `pcall` / metatable 组合输出是否通过断言。
+- 如果需要验证自动化 `test.lua` / `test2.lua` / `examples/table_metatable_showcase.lua` / `examples/generic_for_showcase.lua` 回归，可运行 `go test ./cmd/aluavm`，关注基础方法调用输出、闭包 / `pcall` / metatable 组合输出、对象 key / table 回退链路，以及 generic `for` 专项样例是否通过断言。
 - 如果需要验证宿主主动取消，可使用 `ExecStringWithContext` / `ExecSourceWithContext` / `ExecFileWithContext` 配合已取消 `context.Context` 做回归。
 - 如果需要验证 CLI 超时入口，可对死循环脚本运行 `go run ./cmd/aluavm -timeout 50ms <script.lua>`，预期返回 `context deadline exceeded`。
 - `SetStepLimit(...)` 默认未开启；只有显式设置正数预算时才会生效，`limit <= 0` 会按不限制处理。
@@ -59,7 +61,7 @@
 - Lua 5.1 子集的基础算术与拼接元方法
 - Lua 5.1 子集的基础比较元方法
 - Lua 5.1 子集的 `__metatable` 保护行为
-- Lua 5.1 子集的最小 `#table` 连续数组段长度语义
+- Lua 5.1 子集的最小 `#table` 正整数边界长度语义
 - Lua 5.1 子集的 `do ... end` 与 `break`
 - Lua 5.1 子集的基础 `vararg`
 - Lua 5.1 子集的 table 构造器最后数组字段多返回值展开
@@ -74,13 +76,14 @@
 
 - 当前 lexer 已支持基础关键字、标识符、十进制、指数形式和十六进制数字、短字符串、long bracket 字符串与注释、短注释和常用运算符；更完整的 Lua 词法细节仍待补齐。
 - 当前 parser 已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数声明、方法定义、table 构造、匿名函数、普通调用、方法调用以及 `fn{...}` / `fn"..."` 这类调用语法糖，并会拒绝非法作用域中的 `...`；更多 Lua 5.1 语法仍待补齐。
-- 当前已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数调用、方法调用、table / string 调用语法糖、table 读写、闭包基础能力和基础一元/二元表达式的执行，并已支持字符串长度和最小 `#table` 连续数组段长度语义；完整多返回值语义和更多 Lua 5.1 细节仍待补齐。
-- 当前 `string.find` / `string.match` / `string.gmatch` / `string.gsub` / `string.format` 已支持最小可用子集；其中 `find` / `match` / `gmatch` 支持纯文本查找与 Lua 风格起始下标，`gsub` 支持纯文本字符串 / table / function 替换器与替换次数返回，`format` 支持 `%c` / `%o` / `%u` / `%x` / `%X` / `%e` / `%E` / `%g` / `%G` 在内的少量高频格式符；Lua 5.1 更完整的 pattern / capture / replacer / format 语义仍未实现。
+- 当前已支持 `local`、赋值、`return`、`if`、`while`、`repeat-until`、数值 `for`、generic `for`、`do ... end`、`break`、`vararg`、函数调用、方法调用、table / string 调用语法糖、table 读写、闭包基础能力和基础一元/二元表达式的执行，并已支持未声明名称赋值默认回落到全局环境、最小 `_G` 全局环境同步访问、字符串长度、算术系对可解析数字字符串的最小强转，以及最小 `#table` 正整数边界长度语义；完整多返回值语义和更多 Lua 5.1 细节仍待补齐。
+- 当前 `string.find` / `string.match` / `string.gfind` / `string.gmatch` / `string.gsub` / `string.format` 已支持最小可用子集；其中 `find` / `match` / `gfind` / `gmatch` 支持纯文本查找与 Lua 风格起始下标，`gsub` 支持纯文本字符串 / table / function 替换器与替换次数返回，`format` 支持 `%c` / `%o` / `%u` / `%x` / `%X` / `%e` / `%E` / `%g` / `%G` 在内的少量高频格式符；Lua 5.1 更完整的 pattern / capture / replacer / format 语义仍未实现。
 - 当前已支持最小执行步数限制 `SetStepLimit(...)`、基于 `context.Context` 的宿主主动取消，以及 CLI `-h` / `-e` / `-step-limit` / `-timeout`、基础错误分类输出和最小成功输出 / 退出码约定；更严格的 instruction budget 仍未实现。
-- 当前已支持 Go 宿主向 Lua 注册基础函数，并内置最小 `print`；标准库仍远未完整。
-- 当前已内置 `print`、`clock_ms`、`type`、`tostring`、`tonumber`、`select`、`unpack`、`assert`、`error`、`pcall`、`xpcall`、`next`、`pairs`、`ipairs`、`rawequal`，以及最小 `table.getn` / `table.maxn` / `table.foreach` / `table.foreachi` / `table.insert` / `table.remove` / `table.concat` / `table.sort`、`math.pi` / `math.huge`、`math.abs` / `math.floor` / `math.ceil` / `math.modf` / `math.fmod` / `math.deg` / `math.rad` / `math.frexp` / `math.ldexp` / `math.max` / `math.min` / `math.sqrt` / `math.pow` / `math.random` / `math.randomseed` / `math.log` / `math.log10` / `math.exp` / `math.sinh` / `math.cosh` / `math.tanh` / `math.sin` / `math.cos` / `math.tan` / `math.atan` / `math.atan2` / `math.asin` / `math.acos` 和 `string.find` / `string.match` / `string.gmatch` / `string.gsub` / `string.format` / `string.len` / `string.sub` / `string.lower` / `string.upper` / `string.rep` / `string.reverse` / `string.byte` / `string.char`；这仍只是较小的基础内建子集。
+- 当前已支持 Go 宿主向 Lua 注册基础函数、最小 preload 模块 loader、最小自定义 module searcher、最小直接 loaded-module 注入，并内置最小 `print`；标准库仍远未完整。
+- 当前已内置 `print`、`clock_ms`、`type`、`tostring`、`tonumber`、`module`、`require`、最小 `package` / `package.preload` / `package.loaders` / `package.searchpath` / `package.seeall`、`select`、`unpack`、`assert`、`error`、`pcall`、`xpcall`、`next`、`pairs`、`ipairs`、`rawequal`，以及最小 `table.getn` / `table.maxn` / `table.foreach` / `table.foreachi` / `table.insert` / `table.remove` / `table.concat` / `table.sort`、`math.pi` / `math.huge`、`math.abs` / `math.floor` / `math.ceil` / `math.modf` / `math.mod` / `math.fmod` / `math.deg` / `math.rad` / `math.frexp` / `math.ldexp` / `math.max` / `math.min` / `math.sqrt` / `math.pow` / `math.random` / `math.randomseed` / `math.log` / `math.log10` / `math.exp` / `math.sinh` / `math.cosh` / `math.tanh` / `math.sin` / `math.cos` / `math.tan` / `math.atan` / `math.atan2` / `math.asin` / `math.acos` 和 `string.find` / `string.match` / `string.gfind` / `string.gmatch` / `string.gsub` / `string.format` / `string.len` / `string.sub` / `string.lower` / `string.upper` / `string.rep` / `string.reverse` / `string.byte` / `string.char`；这仍只是较小的基础内建子集。
 - 当前已支持 `error`、`pcall`、基础 `vararg`，并支持最后一个函数调用或 `...` 在返回列表中的多返回值展开、table 构造器最后一个数组字段的展开，以及圆括号抑制展开的单值语义；更完整的 Lua 多返回值规则仍未全部覆盖。
-- 当前回归测试已覆盖多返回值在返回列表、赋值、空 `vararg`、`vararg` 赋值、函数实参列表、`vararg` 实参列表、方法调用、`pcall` 成功/失败路径，以及 table 构造器最后数组字段中的常见调整规则；更完整的 Lua 多返回值边界仍未全部覆盖。
-- 当前已支持 `{}`、键值字段、`t[k]`、`t.name` 的最小读写，以及基础 `setmetatable` / `getmetatable`、`__metatable` 保护、`__index` / `__newindex`、`__tostring`、`__call`、`rawget`、`rawset`、`rawequal`、`__add`、`__sub`、`__mul`、`__div`、`__mod`、`__pow`、`__unm`、`__concat`、`__eq`、`__lt`、`__le`，以及最小 `#table` / `table.getn` 连续数组段长度语义和 `table.maxn` 最大数值键语义；完整 table 行为仍未实现。
+- 当前回归测试已覆盖多返回值在返回列表、赋值、空 `vararg`、`vararg` 赋值、函数实参列表、`vararg` 实参列表、方法调用、`pcall` / `xpcall` 成功失败路径、`unpack` 默认边界长度，以及 table 构造器最后数组字段中的常见调整规则；更完整的 Lua 多返回值边界仍未全部覆盖。
+- 当前 `require` / `package` / `module` 已覆盖相对当前源码目录的最小文件模块加载、`package.loaded` 缓存复用 / 手动预填、`package.preload` 内存 loader、`package.path` 搜索模板、`package.loaders` 自定义 searcher、`package.searchpath` 路径探测、`package.seeall`、最小 `module(...)` 表注册、宿主侧 preload 模块注册、宿主侧自定义 searcher 注册、宿主侧直接 loaded-module 注入、无返回值模块回落为 `true`，以及明显循环加载、`package.loaded = nil` 后重新加载和 `package.loaded = false` 后重新加载的基础回归；当前 `module(...)` 仍不会切换 chunk 环境，完整 Lua 5.1 `package` / 环境语义仍未实现。
+- 当前已支持 `{}`、键值字段、`t[k]`、`t.name` 的最小读写，以及基础 `setmetatable` / `getmetatable`、`__metatable` 保护、`__index` / `__newindex`、`__tostring`、`__call`、`rawget`、`rawset`、`rawequal`、`__add`、`__sub`、`__mul`、`__div`、`__mod`、`__pow`、`__unm`、`__concat`、`__eq`、`__lt`、`__le`，以及非法 `__index` / `__newindex` 元方法值和明显链式环、非法 `__call` 链式自引用或环的基础报错路径，还有算术系对可解析数字字符串的最小强转、原生 `..` 对“双方都必须是字符串或数字”的最小收口、同类型字符串的直接有序比较、最小 `#table` / `table.getn` 正整数边界长度语义、`table.maxn` 最大数值键语义、`table.foreach` / `table.foreachi` 对 `__call` 和当前边界长度的最小复用、`table.concat` 对当前边界长度和 `__tostring` 的最小复用、`table.insert` / `table.remove` 对当前边界长度的最小复用、`table.sort` 对当前边界长度、`__lt` 和 `__call` comparator 的最小复用、table / function key 的对象身份匹配，以及 `pcall` / `xpcall` 对 `__call` 的最小复用、`__eq` 共享元方法规则、`__lt` 共享元方法规则和 `<=` / `>=` 对共享 `__le` / 反向 `__lt` 的最小回退；完整 table 行为仍未实现。
 - 当前已支持 `local function`、匿名函数表达式和基础 upvalue 读写；闭包仍未覆盖完整 Lua 5.1 upvalue 语义。
-- 当前 generic `for` 主要面向 `pairs` / `ipairs` / `next` 这一最小可用链路；更完整的迭代器兼容性仍待补齐。
+- 当前 generic `for` 已覆盖 `pairs` / `ipairs` / `next` 主链路，并已补充自定义 iterator 三元组、带 `__call` 的 iterator，以及 `string.gmatch` 接入循环的回归；更完整的迭代器兼容性仍待补齐。

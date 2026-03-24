@@ -40,9 +40,12 @@
 - 最小 table 读写
 - 最小 metatable 读写、保护、调用、算术与比较元方法能力
 - Go 宿主函数注册
-- 基础内建函数与最小 generic `for` 迭代能力
+- 基础内建函数、最小 `_G` / `module(...)` / `require` / `package` / `package.preload` / `package.loaders` / `package.searchpath` 模块加载与最小 generic `for` 迭代能力
 - 最小执行步数限制能力，可用于阻止明显的死循环脚本长期占用执行线程
 - 基于 `context.Context` 的最小宿主取消入口
+- Go 宿主侧最小 preload 模块注册入口
+- Go 宿主侧最小自定义 module searcher 注册入口
+- Go 宿主侧最小直接 loaded-module 注入入口
 - CLI 级最小内联执行、超时控制、步数预算、help/usage、基础错误分类输出、最小成功输出 / 退出码约定，以及进程级集成测试覆盖
 
 补充说明：

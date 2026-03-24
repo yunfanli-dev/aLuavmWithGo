@@ -3,6 +3,8 @@ package vm
 import (
 	"context"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -37,6 +39,99 @@ func TestExecStringEvaluatesStringConcatAndLength(t *testing.T) {
 
 	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(4) {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesNumericStringConcat(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`return 1 .. "x", "x" .. 2`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "1x" {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "x2" {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringRejectsInvalidPrimitiveConcatOperand(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`return "x" .. true`)
+	if err == nil {
+		t.Fatal("expected invalid concat operand error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": operator ".." expects string-like operands, got string and boolean` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringEvaluatesOrderedStringComparisons(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`return "ant" < "bat", "bat" <= "bat", "cat" > "bat", "cat" >= "cat"`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	expected := []bool{true, true, true, true}
+	for index, want := range expected {
+		if returnValues[index].Type != ValueTypeBoolean || returnValues[index].Data != want {
+			t.Fatalf("unexpected ordered string comparison value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
+func TestExecStringCoercesNumericStringsInArithmeticAndNumericFor(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local total = 0
+for i = "1", "3" do
+	total = total + i
+end
+return "2" + 3, -"4", math.abs("5"), total
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	expected := []float64{5, -4, 5, 6}
+	for index, want := range expected {
+		if returnValues[index].Type != ValueTypeNumber || returnValues[index].Data != want {
+			t.Fatalf("unexpected numeric-string coercion value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
+func TestExecStringRejectsMixedStringNumberOrderedComparison(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`return "2" < 10`)
+	if err == nil {
+		t.Fatal("expected mixed string-number comparison error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": operator "<" expects number operand, got string` {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -122,6 +217,114 @@ func TestExecStringEvaluatesBooleanLogic(t *testing.T) {
 
 	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringAssignsUndeclaredNameIntoGlobalScope(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function set_answer()
+	answer = 42
+end
+
+set_answer()
+return answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringExposesMinimalGlobalEnvThroughG(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+answer = 7
+_G.extra = 9
+rawset(_G, "third", 11)
+return _G.answer, extra, third, type(_G.print), rawequal(_G, _G._G)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 5 {
+		t.Fatalf("expected 5 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(7) {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(9) {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(11) {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "function" {
+		t.Fatalf("unexpected fourth return value: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeBoolean || returnValues[4].Data != true {
+		t.Fatalf("unexpected fifth return value: %#v", returnValues[4])
+	}
+}
+
+func TestExecStringSupportsMinimalModuleAndPackageSeeAll(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local mod = module("alpha.beta", package.seeall)
+mod.answer = 42
+return rawequal(mod, package.loaded["alpha.beta"]),
+       rawequal(mod, alpha.beta),
+       mod._NAME,
+       mod._PACKAGE,
+       type(mod.print),
+       alpha.beta.answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 6 {
+		t.Fatalf("expected 6 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "alpha.beta" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "alpha." {
+		t.Fatalf("unexpected fourth return value: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeString || returnValues[4].Data != "function" {
+		t.Fatalf("unexpected fifth return value: %#v", returnValues[4])
+	}
+
+	if returnValues[5].Type != ValueTypeNumber || returnValues[5].Data != float64(42) {
+		t.Fatalf("unexpected sixth return value: %#v", returnValues[5])
 	}
 }
 
@@ -374,6 +577,33 @@ return math.fmod(7.5, 2), math.fmod(-7.5, 2)
 		got := returnValues[index].Data.(float64)
 		if math.Abs(got-want) > 1e-9 {
 			t.Fatalf("unexpected math.fmod return value at %d: got %v want %v", index, got, want)
+		}
+	}
+}
+
+func TestExecStringEvaluatesMathMod(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+return math.mod(7.5, 2), math.mod(-7.5, 2)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	expected := []float64{1.5, -1.5}
+	for index, want := range expected {
+		if returnValues[index].Type != ValueTypeNumber {
+			t.Fatalf("unexpected math.mod return type at %d: %#v", index, returnValues[index])
+		}
+
+		got := returnValues[index].Data.(float64)
+		if math.Abs(got-want) > 1e-9 {
+			t.Fatalf("unexpected math.mod return value at %d: got %v want %v", index, got, want)
 		}
 	}
 }
@@ -693,6 +923,10 @@ local gm3 = {}
 for part in string.gmatch("abc", "", 2) do
 	table.insert(gm3, part)
 end
+local gf = {}
+for part in string.gfind("banana", "na") do
+	table.insert(gf, part)
+end
 local g1, g1n = string.gsub("banana", "na", "NA")
 local g2, g2n = string.gsub("banana", "na", "NA", 1)
 local g3, g3n = string.gsub("abc", "", ".")
@@ -708,14 +942,14 @@ local sf6 = string.format("%o", 64)
 local sf7 = string.format("%u", -1)
 local sf8 = string.format("%e %E", 12.5, 12.5)
 local sf9 = string.format("%g %G", 12345.5, 0.00125)
-return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.sub("abcdef", 2, 4), string.sub("abcdef", -3, -1), string.rep("ha", 3), string.reverse("stressed"), string.byte("ABC", 2), b1, b2, b3, string.char(65, 66, 67), f1s, f1e, f2s, f2e, f3s, f3e, f4s, f5s, f5e, m1, m2, m3, m4, gm[1], gm[2], gm2a, gm2b, table.getn(gm3), sf1, sf2, sf3, sf4, sf5, sf6, sf7, sf8, sf9, g1, g1n, g2, g2n, g3, g3n, g4, g4n, g5, g5n, g6, g6n
+return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.sub("abcdef", 2, 4), string.sub("abcdef", -3, -1), string.rep("ha", 3), string.reverse("stressed"), string.byte("ABC", 2), b1, b2, b3, string.char(65, 66, 67), f1s, f1e, f2s, f2e, f3s, f3e, f4s, f5s, f5e, m1, m2, m3, m4, gm[1], gm[2], gm2a, gm2b, table.getn(gm3), gf[1], gf[2], sf1, sf2, sf3, sf4, sf5, sf6, sf7, sf8, sf9, g1, g1n, g2, g2n, g3, g3n, g4, g4n, g5, g5n, g6, g6n
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 51 {
-		t.Fatalf("expected 51 return values, got %d", len(returnValues))
+	if len(returnValues) != 53 {
+		t.Fatalf("expected 53 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(4) {
@@ -799,16 +1033,24 @@ return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.su
 		t.Fatalf("unexpected empty-pattern string.gmatch count: %#v", returnValues[29])
 	}
 
+	if returnValues[30].Type != ValueTypeString || returnValues[30].Data != "na" {
+		t.Fatalf("unexpected first string.gfind iteration result: %#v", returnValues[30])
+	}
+
+	if returnValues[31].Type != ValueTypeString || returnValues[31].Data != "na" {
+		t.Fatalf("unexpected second string.gfind iteration result: %#v", returnValues[31])
+	}
+
 	expectedFormats := map[int]string{
-		30: "hello lua 51",
-		31: `"hi" 1.500000 %`,
-		32: "-7",
-		33: "AB",
-		34: "ff FF",
-		35: "100",
-		36: "4294967295",
-		37: "1.250000e+01 1.250000E+01",
-		38: "12345.5 0.00125",
+		32: "hello lua 51",
+		33: `"hi" 1.500000 %`,
+		34: "-7",
+		35: "AB",
+		36: "ff FF",
+		37: "100",
+		38: "4294967295",
+		39: "1.250000e+01 1.250000E+01",
+		40: "12345.5 0.00125",
 	}
 	for index, want := range expectedFormats {
 		if returnValues[index].Type != ValueTypeString || returnValues[index].Data != want {
@@ -816,52 +1058,52 @@ return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.su
 		}
 	}
 
-	if returnValues[39].Type != ValueTypeString || returnValues[39].Data != "baNANA" {
-		t.Fatalf("unexpected string.gsub return value at 39: %#v", returnValues[39])
-	}
-
-	if returnValues[40].Type != ValueTypeNumber || returnValues[40].Data != float64(2) {
-		t.Fatalf("unexpected string.gsub replacement count at 40: %#v", returnValues[40])
-	}
-
-	if returnValues[41].Type != ValueTypeString || returnValues[41].Data != "baNAna" {
+	if returnValues[41].Type != ValueTypeString || returnValues[41].Data != "baNANA" {
 		t.Fatalf("unexpected string.gsub return value at 41: %#v", returnValues[41])
 	}
 
-	if returnValues[42].Type != ValueTypeNumber || returnValues[42].Data != float64(1) {
+	if returnValues[42].Type != ValueTypeNumber || returnValues[42].Data != float64(2) {
 		t.Fatalf("unexpected string.gsub replacement count at 42: %#v", returnValues[42])
 	}
 
-	if returnValues[43].Type != ValueTypeString || returnValues[43].Data != ".a.b.c." {
-		t.Fatalf("unexpected empty-pattern string.gsub result: %#v", returnValues[43])
+	if returnValues[43].Type != ValueTypeString || returnValues[43].Data != "baNAna" {
+		t.Fatalf("unexpected string.gsub return value at 43: %#v", returnValues[43])
 	}
 
-	if returnValues[44].Type != ValueTypeNumber || returnValues[44].Data != float64(4) {
-		t.Fatalf("unexpected empty-pattern string.gsub replacement count: %#v", returnValues[44])
+	if returnValues[44].Type != ValueTypeNumber || returnValues[44].Data != float64(1) {
+		t.Fatalf("unexpected string.gsub replacement count at 44: %#v", returnValues[44])
 	}
 
-	if returnValues[45].Type != ValueTypeString || returnValues[45].Data != "banana" {
-		t.Fatalf("unexpected missing-match string.gsub result: %#v", returnValues[45])
+	if returnValues[45].Type != ValueTypeString || returnValues[45].Data != ".a.b.c." {
+		t.Fatalf("unexpected empty-pattern string.gsub result: %#v", returnValues[45])
 	}
 
-	if returnValues[46].Type != ValueTypeNumber || returnValues[46].Data != float64(0) {
-		t.Fatalf("unexpected missing-match string.gsub replacement count: %#v", returnValues[46])
+	if returnValues[46].Type != ValueTypeNumber || returnValues[46].Data != float64(4) {
+		t.Fatalf("unexpected empty-pattern string.gsub replacement count: %#v", returnValues[46])
 	}
 
-	if returnValues[47].Type != ValueTypeString || returnValues[47].Data != "ba<na>na" {
-		t.Fatalf("unexpected function-replacer string.gsub result: %#v", returnValues[47])
+	if returnValues[47].Type != ValueTypeString || returnValues[47].Data != "banana" {
+		t.Fatalf("unexpected missing-match string.gsub result: %#v", returnValues[47])
 	}
 
-	if returnValues[48].Type != ValueTypeNumber || returnValues[48].Data != float64(1) {
-		t.Fatalf("unexpected function-replacer string.gsub replacement count: %#v", returnValues[48])
+	if returnValues[48].Type != ValueTypeNumber || returnValues[48].Data != float64(0) {
+		t.Fatalf("unexpected missing-match string.gsub replacement count: %#v", returnValues[48])
 	}
 
-	if returnValues[49].Type != ValueTypeString || returnValues[49].Data != "ba77" {
-		t.Fatalf("unexpected table-replacer string.gsub result: %#v", returnValues[49])
+	if returnValues[49].Type != ValueTypeString || returnValues[49].Data != "ba<na>na" {
+		t.Fatalf("unexpected function-replacer string.gsub result: %#v", returnValues[49])
 	}
 
-	if returnValues[50].Type != ValueTypeNumber || returnValues[50].Data != float64(2) {
-		t.Fatalf("unexpected table-replacer string.gsub replacement count: %#v", returnValues[50])
+	if returnValues[50].Type != ValueTypeNumber || returnValues[50].Data != float64(1) {
+		t.Fatalf("unexpected function-replacer string.gsub replacement count: %#v", returnValues[50])
+	}
+
+	if returnValues[51].Type != ValueTypeString || returnValues[51].Data != "ba77" {
+		t.Fatalf("unexpected table-replacer string.gsub result: %#v", returnValues[51])
+	}
+
+	if returnValues[52].Type != ValueTypeNumber || returnValues[52].Data != float64(2) {
+		t.Fatalf("unexpected table-replacer string.gsub replacement count: %#v", returnValues[52])
 	}
 }
 
@@ -1089,6 +1331,98 @@ return total
 
 	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(12) {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesGenericForWithCustomIteratorTriple(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local function step(state, control)
+	local next_index = control + 1
+	if next_index > state.limit then
+		return nil
+	end
+
+	return next_index, state.values[next_index]
+end
+
+local total = 0
+for index, value in step, { limit = 3, values = { 10, 20, 30 } }, 0 do
+	total = total + index + value
+end
+
+return total
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(66) {
+		t.Fatalf("unexpected custom iterator total: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesGenericForWithMetatableCallIterator(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local iterator = {}
+setmetatable(iterator, {
+	__call = function(_, state, control)
+		local next_index = control + 1
+		if next_index > state.limit then
+			return nil
+		end
+
+		return next_index, state.values[next_index]
+	end
+})
+
+local total = 0
+for index, value in iterator, { limit = 3, values = { 5, 6, 7 } }, 0 do
+	total = total + index * value
+end
+
+return total
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(38) {
+		t.Fatalf("unexpected metatable iterator total: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringEvaluatesGenericForWithStringGMatch(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local parts = {}
+for part in string.gmatch("aba", "a") do
+	table.insert(parts, part)
+end
+return table.concat(parts, "|")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "a|a" {
+		t.Fatalf("unexpected gmatch generic-for result: %#v", returnValues[0])
 	}
 }
 
@@ -1464,6 +1798,78 @@ return target.answer, writes.answer
 	}
 }
 
+func TestExecStringRejectsInvalidMetatableIndexTarget(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local target = {}
+setmetatable(target, { __index = 1 })
+return target.answer
+`)
+	if err == nil {
+		t.Fatal("expected invalid __index target error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": attempt to index non-table __index value of type number` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRejectsInvalidMetatableNewIndexTarget(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local target = {}
+setmetatable(target, { __newindex = 1 })
+target.answer = 42
+`)
+	if err == nil {
+		t.Fatal("expected invalid __newindex target error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": attempt to index-assign non-table __newindex value of type number` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRejectsMetatableIndexLoop(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local target = {}
+local meta = {}
+meta.__index = target
+setmetatable(target, meta)
+return target.answer
+`)
+	if err == nil {
+		t.Fatal("expected __index loop error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": loop in table __index chain` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRejectsMetatableNewIndexLoop(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local target = {}
+local meta = {}
+meta.__newindex = target
+setmetatable(target, meta)
+target.answer = 42
+`)
+	if err == nil {
+		t.Fatal("expected __newindex loop error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": loop in table __newindex chain` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestExecStringEvaluatesMetatableToString(t *testing.T) {
 	state := NewState()
 
@@ -1511,6 +1917,42 @@ return callable(5)
 
 	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(7) {
 		t.Fatalf("unexpected return value: %#v", returnValues[0])
+	}
+}
+
+func TestExecStringRejectsMetatableCallLoop(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local target = {}
+setmetatable(target, { __call = target })
+return target()
+`)
+	if err == nil {
+		t.Fatal("expected __call loop error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": loop in table __call chain` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRejectsMetatableCallCycle(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local a = {}
+local b = {}
+setmetatable(a, { __call = b })
+setmetatable(b, { __call = a })
+return a()
+`)
+	if err == nil {
+		t.Fatal("expected __call cycle error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": loop in table __call chain` {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1597,7 +2039,7 @@ func TestExecStringEvaluatesComparisonMetamethods(t *testing.T) {
 	if err := state.ExecString(`
 local lhs = {}
 local rhs = {}
-setmetatable(lhs, {
+local meta = {
 	__eq = function(_, _)
 		return true
 	end,
@@ -1607,7 +2049,9 @@ setmetatable(lhs, {
 	__le = function(_, _)
 		return false
 	end
-})
+}
+setmetatable(lhs, meta)
+setmetatable(rhs, meta)
 return lhs == rhs, lhs ~= rhs, lhs < rhs, lhs > rhs, lhs <= rhs, lhs >= rhs
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
@@ -1622,6 +2066,114 @@ return lhs == rhs, lhs ~= rhs, lhs < rhs, lhs > rhs, lhs <= rhs, lhs >= rhs
 	for index, want := range expected {
 		if returnValues[index].Type != ValueTypeBoolean || returnValues[index].Data != want {
 			t.Fatalf("unexpected return value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
+func TestExecStringRequiresSharedEqMetamethod(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local lhs = {}
+local rhs = {}
+setmetatable(lhs, {
+	__eq = function(_, _)
+		return true
+	end
+})
+setmetatable(rhs, {})
+return lhs == rhs, lhs ~= rhs
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != false {
+		t.Fatalf("unexpected equality result without shared __eq: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected inequality result without shared __eq: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringRequiresSharedOrderedMetamethod(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local lhs = {}
+local rhs = {}
+setmetatable(lhs, {
+	__lt = function(_, _)
+		return true
+	end
+})
+setmetatable(rhs, {})
+return lhs < rhs
+`)
+	if err == nil {
+		t.Fatal("expected ordered comparison without shared __lt to fail")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": operator "<" expects number operand, got table` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRequiresSharedOrderedMetamethodForLessEqual(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local lhs = {}
+local rhs = {}
+setmetatable(lhs, {
+	__le = function(_, _)
+		return true
+	end
+})
+setmetatable(rhs, {})
+return lhs <= rhs
+`)
+	if err == nil {
+		t.Fatal("expected less-equal comparison without shared __le to fail")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": operator "<=" expects number operand, got table` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringEvaluatesLessEqualFallbackViaLessThanMetamethod(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local low = { score = 1 }
+local high = { score = 3 }
+local meta = {
+	__lt = function(lhs, rhs)
+		return lhs.score < rhs.score
+	end
+}
+setmetatable(low, meta)
+setmetatable(high, meta)
+return low <= high, high <= low, high >= low, low >= high
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	expected := []bool{true, false, true, false}
+	for index, want := range expected {
+		if returnValues[index].Type != ValueTypeBoolean || returnValues[index].Data != want {
+			t.Fatalf("unexpected fallback comparison result at %d: %#v", index, returnValues[index])
 		}
 	}
 }
@@ -1696,6 +2248,55 @@ return rawget(target, "answer"), target.answer
 	}
 }
 
+func TestExecStringEvaluatesTableAndFunctionIdentityKeys(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local store = {}
+local table_key_a = {}
+local table_key_b = {}
+
+local function make_key()
+	return function()
+		return "same-body"
+	end
+end
+
+local fn_key_a = make_key()
+local fn_key_b = make_key()
+
+store[table_key_a] = "table-a"
+store[table_key_b] = "table-b"
+rawset(store, fn_key_a, "fn-a")
+rawset(store, fn_key_b, "fn-b")
+
+return store[table_key_a], store[table_key_b], rawget(store, fn_key_a), rawget(store, fn_key_b)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "table-a" {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "table-b" {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "fn-a" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "fn-b" {
+		t.Fatalf("unexpected fourth return value: %#v", returnValues[3])
+	}
+}
+
 func TestExecStringEvaluatesRawEqual(t *testing.T) {
 	state := NewState()
 
@@ -1749,14 +2350,17 @@ table.insert(values, 2)
 table.insert(values, 2, 9)
 local removed_mid = table.remove(values, 2)
 local removed_last = table.remove(values)
-return values[1], values[2], values[3], values[4], removed_mid, removed_last
+local sparse = { [1] = "x", [4] = "y" }
+table.insert(sparse, "z")
+local sparse_removed = table.remove(sparse)
+return values[1], values[2], values[3], values[4], removed_mid, removed_last, sparse[1], sparse[4], sparse[5], sparse_removed
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 6 {
-		t.Fatalf("expected 6 return values, got %d", len(returnValues))
+	if len(returnValues) != 10 {
+		t.Fatalf("expected 10 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Data != float64(1) || returnValues[1].Data != float64(3) || returnValues[2].Type != ValueTypeNil || returnValues[3].Type != ValueTypeNil {
@@ -1766,6 +2370,22 @@ return values[1], values[2], values[3], values[4], removed_mid, removed_last
 	if returnValues[4].Data != float64(9) || returnValues[5].Data != float64(2) {
 		t.Fatalf("unexpected removed values: %#v", returnValues[4:6])
 	}
+
+	if returnValues[6].Type != ValueTypeString || returnValues[6].Data != "x" {
+		t.Fatalf("unexpected sparse first value after insert/remove: %#v", returnValues[6])
+	}
+
+	if returnValues[7].Type != ValueTypeString || returnValues[7].Data != "y" {
+		t.Fatalf("unexpected sparse fourth value after insert/remove: %#v", returnValues[7])
+	}
+
+	if returnValues[8].Type != ValueTypeNil {
+		t.Fatalf("expected sparse fifth slot to be cleared, got %#v", returnValues[8])
+	}
+
+	if returnValues[9].Type != ValueTypeString || returnValues[9].Data != "z" {
+		t.Fatalf("unexpected sparse removed value: %#v", returnValues[9])
+	}
 }
 
 func TestExecStringEvaluatesTableGetN(t *testing.T) {
@@ -1774,18 +2394,19 @@ func TestExecStringEvaluatesTableGetN(t *testing.T) {
 	if err := state.ExecString(`
 local dense = { 10, 20, 30 }
 local sparse = { [1] = "x", [2] = "y", [4] = "z" }
+local nofirst = { [2] = "only" }
 local empty = {}
-return table.getn(dense), table.getn(sparse), table.getn(empty)
+return table.getn(dense), table.getn(sparse), table.getn(nofirst), table.getn(empty)
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 3 {
-		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
 	}
 
-	expected := []float64{3, 2, 0}
+	expected := []float64{3, 4, 0, 0}
 	for index, want := range expected {
 		if returnValues[index].Type != ValueTypeNumber || returnValues[index].Data != want {
 			t.Fatalf("unexpected table.getn return value at %d: %#v", index, returnValues[index])
@@ -1808,14 +2429,21 @@ end)
 local empty = table.foreachi({}, function()
 	return "never"
 end)
-return sum, stop, empty
+local sparse_seen = ""
+local sparse_stop = table.foreachi({ [1] = "x", [4] = "y" }, function(i, v)
+	sparse_seen = sparse_seen .. i .. ":" .. v .. ";"
+	if i == 4 then
+		return "stop@" .. v
+	end
+end)
+return sum, stop, empty, sparse_seen, sparse_stop
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 3 {
-		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	if len(returnValues) != 5 {
+		t.Fatalf("expected 5 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(33) {
@@ -1828,6 +2456,47 @@ return sum, stop, empty
 
 	if returnValues[2].Type != ValueTypeNil {
 		t.Fatalf("expected nil from empty table.foreachi, got %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "1:x;4:y;" {
+		t.Fatalf("unexpected sparse table.foreachi traversal output: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeString || returnValues[4].Data != "stop@y" {
+		t.Fatalf("unexpected sparse table.foreachi early-stop value: %#v", returnValues[4])
+	}
+}
+
+func TestExecStringEvaluatesTableForeachIWithMetatableCallCallback(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local callback = {}
+local seen = ""
+setmetatable(callback, {
+	__call = function(_, i, v)
+		seen = seen .. i .. "=" .. v .. ";"
+		if i == 2 then
+			return "stop@" .. v
+		end
+	end
+})
+return table.foreachi({ 10, 20, 30 }, callback), seen
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "stop@20" {
+		t.Fatalf("unexpected metatable foreachi stop value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "1=10;2=20;" {
+		t.Fatalf("unexpected metatable foreachi traversal output: %#v", returnValues[1])
 	}
 }
 
@@ -1866,6 +2535,41 @@ return seen, stop, empty
 
 	if returnValues[2].Type != ValueTypeNil {
 		t.Fatalf("expected nil from empty table.foreach, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringEvaluatesTableForeachWithMetatableCallCallback(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local callback = {}
+local seen = ""
+setmetatable(callback, {
+	__call = function(_, k, v)
+		seen = seen .. tostring(k) .. "=" .. tostring(v) .. ";"
+		if k == "label" then
+			return "stop@" .. v
+		end
+	end
+})
+
+local values = { answer = 42, label = "lua" }
+return table.foreach(values, callback), seen
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "stop@lua" {
+		t.Fatalf("unexpected metatable foreach stop value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "answer=42;label=lua;" {
+		t.Fatalf("unexpected metatable foreach traversal output: %#v", returnValues[1])
 	}
 }
 
@@ -1919,14 +2623,23 @@ func TestExecStringEvaluatesTableConcat(t *testing.T) {
 
 	if err := state.ExecString(`
 local values = { "a", "b", "c", 4 }
-return table.concat(values), table.concat(values, "-"), table.concat(values, "-", 2, 3), table.concat(values, "-", 5, 4)
+local tagged = {}
+setmetatable(tagged, {
+	__tostring = function()
+		return "tagged"
+	end
+})
+local mixed = { "a", tagged, true }
+local sparse = { [1] = "a", [4] = "d" }
+local sparse_ok, sparse_err = pcall(table.concat, sparse, "|")
+return table.concat(values), table.concat(values, "-"), table.concat(values, "-", 2, 3), table.concat(values, "-", 5, 4), table.concat(mixed, "|"), sparse_ok, sparse_err
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 4 {
-		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	if len(returnValues) != 7 {
+		t.Fatalf("expected 7 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "abc4" {
@@ -1944,6 +2657,18 @@ return table.concat(values), table.concat(values, "-"), table.concat(values, "-"
 	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "" {
 		t.Fatalf("unexpected empty-range concat value: %#v", returnValues[3])
 	}
+
+	if returnValues[4].Type != ValueTypeString || returnValues[4].Data != "a|tagged|true" {
+		t.Fatalf("unexpected stringable concat value: %#v", returnValues[4])
+	}
+
+	if returnValues[5].Type != ValueTypeBoolean || returnValues[5].Data != false {
+		t.Fatalf("unexpected sparse concat status: %#v", returnValues[5])
+	}
+
+	if returnValues[6].Type != ValueTypeString || returnValues[6].Data != "table.concat encountered nil value" {
+		t.Fatalf("unexpected sparse concat error: %#v", returnValues[6])
+	}
 }
 
 func TestExecStringEvaluatesTableSort(t *testing.T) {
@@ -1958,14 +2683,43 @@ table.sort(descending, function(a, b)
 	return a > b
 end)
 
-return table.concat(ascending, ","), table.concat(descending, ",")
+local callable_desc = { 3, 1, 2 }
+local comparator = {}
+setmetatable(comparator, {
+	__call = function(_, a, b)
+		return a > b
+	end
+})
+table.sort(callable_desc, comparator)
+
+local low = { score = 1 }
+local high = { score = 3 }
+local mid = { score = 2 }
+local ranked = { high, low, mid }
+
+local meta = {
+	__lt = function(lhs, rhs)
+		return lhs.score < rhs.score
+	end
+}
+
+setmetatable(low, meta)
+setmetatable(mid, meta)
+setmetatable(high, meta)
+
+table.sort(ranked)
+
+local sparse = { [1] = 3, [4] = 1 }
+local sparse_ok, sparse_err = pcall(table.sort, sparse)
+
+return table.concat(ascending, ","), table.concat(descending, ","), table.concat(callable_desc, ","), ranked[1].score, ranked[2].score, ranked[3].score, sparse_ok, sparse_err
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 2 {
-		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	if len(returnValues) != 8 {
+		t.Fatalf("expected 8 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "1,2,3" {
@@ -1974,6 +2728,30 @@ return table.concat(ascending, ","), table.concat(descending, ",")
 
 	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "3,2,1" {
 		t.Fatalf("unexpected descending sort value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "3,2,1" {
+		t.Fatalf("unexpected callable comparator sort value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNumber || returnValues[3].Data != float64(1) {
+		t.Fatalf("unexpected first ranked score: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeNumber || returnValues[4].Data != float64(2) {
+		t.Fatalf("unexpected second ranked score: %#v", returnValues[4])
+	}
+
+	if returnValues[5].Type != ValueTypeNumber || returnValues[5].Data != float64(3) {
+		t.Fatalf("unexpected third ranked score: %#v", returnValues[5])
+	}
+
+	if returnValues[6].Type != ValueTypeBoolean || returnValues[6].Data != false {
+		t.Fatalf("unexpected sparse sort status: %#v", returnValues[6])
+	}
+
+	if returnValues[7].Type != ValueTypeString || returnValues[7].Data != "table.sort encountered nil value" {
+		t.Fatalf("unexpected sparse sort error: %#v", returnValues[7])
 	}
 }
 
@@ -2096,6 +2874,438 @@ func TestExecStringEvaluatesBuiltinToNumber(t *testing.T) {
 	}
 }
 
+func TestExecSourceEvaluatesBuiltinRequireRelativeModule(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	modulePath := filepath.Join(tempDir, "helper.lua")
+
+	if err := os.WriteFile(modulePath, []byte(`
+load_count = (load_count or 0) + 1
+return { answer = 42 }
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+local first = require("helper")
+local second = require("helper")
+return first.answer, rawequal(first, second), load_count
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(1) {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+}
+
+func TestExecSourceRequireReturnsTrueWhenModuleReturnsNothing(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	modulePath := filepath.Join(tempDir, "flag.lua")
+
+	if err := os.WriteFile(modulePath, []byte(`
+side_effect = "loaded"
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+local first = require("flag")
+local second = require("flag")
+return first, second, side_effect
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "loaded" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+}
+
+func TestExecSourceRejectsRequireLoop(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	firstPath := filepath.Join(tempDir, "first.lua")
+	secondPath := filepath.Join(tempDir, "second.lua")
+
+	if err := os.WriteFile(firstPath, []byte(`
+return require("second")
+`), 0o644); err != nil {
+		t.Fatalf("write first module: %v", err)
+	}
+
+	if err := os.WriteFile(secondPath, []byte(`
+return require("first")
+`), 0o644); err != nil {
+		t.Fatalf("write second module: %v", err)
+	}
+
+	err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+return require("first")
+`,
+	})
+	if err == nil {
+		t.Fatal("expected require loop error")
+	}
+
+	if err.Error() != `execute compiled Lua source "`+mainPath+`": execute compiled Lua source "`+firstPath+`": execute compiled Lua source "`+secondPath+`": loop in require chain for module "first"` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecSourceRequireRespectsPackageLoaded(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	modulePath := filepath.Join(tempDir, "helper.lua")
+
+	if err := os.WriteFile(modulePath, []byte(`
+load_count = (load_count or 0) + 1
+return { answer = 99 }
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+package.loaded.helper = { answer = 7 }
+local mod = require("helper")
+return mod.answer, load_count, package.loaded.helper.answer
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(7) {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected second return value to be nil, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(7) {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+}
+
+func TestExecSourceRequireRespectsPackagePath(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	moduleDir := filepath.Join(tempDir, "lib")
+	modulePath := filepath.Join(moduleDir, "nested.lua")
+
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+		t.Fatalf("mkdir module dir: %v", err)
+	}
+
+	if err := os.WriteFile(modulePath, []byte(`
+return { answer = 55 }
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+package.path = "lib/?.lua"
+local mod = require("nested")
+return mod.answer, package.path
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(55) {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "lib/?.lua" {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringRequireRespectsPackagePreload(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+package.preload.helper = function(name)
+	package.loaded._helper_load_count = (package.loaded._helper_load_count or 0) + 1
+	return { module_name = name, answer = 88 }
+end
+local first = require("helper")
+local second = require("helper")
+return first.module_name, first.answer, rawequal(first, second), package.loaded._helper_load_count
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "helper" {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(88) {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeBoolean || returnValues[2].Data != true {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNumber || returnValues[3].Data != float64(1) {
+		t.Fatalf("unexpected fourth return value: %#v", returnValues[3])
+	}
+}
+
+func TestExecStringRejectsRequirePreloadLoop(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+package.preload.helper = function()
+	return require("helper")
+end
+return require("helper")
+`)
+	if err == nil {
+		t.Fatal("expected preload require loop error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": loop in require chain for module "helper"` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRequireUsesCustomPackageLoader(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+table.insert(package.loaders, 1, function(name)
+	return function(name)
+		return { answer = 73, name = name }
+	end
+end)
+local mod = require("virtual")
+return mod.answer, mod.name
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(73) {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "virtual" {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecSourceRequireReloadsAfterClearingPackageLoaded(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	modulePath := filepath.Join(tempDir, "reload.lua")
+
+	if err := os.WriteFile(modulePath, []byte(`
+package.loaded._reload_count = (package.loaded._reload_count or 0) + 1
+return package.loaded._reload_count
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+local first = require("reload")
+package.loaded.reload = nil
+local second = require("reload")
+return first, second, package.loaded.reload, package.loaded._reload_count
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	expected := []float64{1, 2, 2, 2}
+	for index, want := range expected {
+		if returnValues[index].Type != ValueTypeNumber || returnValues[index].Data != want {
+			t.Fatalf("unexpected reload return value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
+func TestExecSourceRequireReloadsAfterPackageLoadedFalse(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	modulePath := filepath.Join(tempDir, "false_reload.lua")
+
+	if err := os.WriteFile(modulePath, []byte(`
+package.loaded._false_reload_count = (package.loaded._false_reload_count or 0) + 1
+return package.loaded._false_reload_count
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+local first = require("false_reload")
+package.loaded.false_reload = false
+local second = require("false_reload")
+return first, second, package.loaded.false_reload, package.loaded._false_reload_count
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	expected := []float64{1, 2, 2, 2}
+	for index, want := range expected {
+		if returnValues[index].Type != ValueTypeNumber || returnValues[index].Data != want {
+			t.Fatalf("unexpected false-reload return value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
+func TestExecSourceEvaluatesPackageSearchPath(t *testing.T) {
+	state := NewState()
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.lua")
+	moduleDir := filepath.Join(tempDir, "pkg")
+	modulePath := filepath.Join(moduleDir, "tool.lua")
+
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+		t.Fatalf("mkdir module dir: %v", err)
+	}
+
+	if err := os.WriteFile(modulePath, []byte(`return 1`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+
+	if err := state.ExecSource(Source{
+		Name: mainPath,
+		Content: `
+local found = package.searchpath("tool", "pkg/?.lua")
+local missing, err = package.searchpath("missing", "pkg/?.lua")
+return found, missing, err
+`,
+	}); err != nil {
+		t.Fatalf("exec source: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != modulePath {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected second return value to be nil, got %#v", returnValues[1])
+	}
+
+	expectedError := "\n\tno file '" + filepath.Join(tempDir, "pkg", "missing.lua") + "'\n\tno file 'pkg/missing.lua'"
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != expectedError {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringRequirePromotesFalseLoaderResultToTrue(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+package.preload.falsemod = function()
+	return false
+end
+local first = require("falsemod")
+local second = package.loaded.falsemod
+return first, second
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	for index := 0; index < 2; index++ {
+		if returnValues[index].Type != ValueTypeBoolean || returnValues[index].Data != true {
+			t.Fatalf("unexpected promoted false-loader value at %d: %#v", index, returnValues[index])
+		}
+	}
+}
+
 func TestExecStringEvaluatesBuiltinSelect(t *testing.T) {
 	state := NewState()
 
@@ -2134,17 +3344,19 @@ func TestExecStringEvaluatesBuiltinUnpack(t *testing.T) {
 
 	if err := state.ExecString(`
 local values = { 10, 20, 30, 40 }
+local sparse = { [1] = "x", [4] = "y" }
 local a, b, c, d = unpack(values)
 local e, f = unpack(values, 2, 3)
 local g, h = unpack(values, 5, 4)
-return a, b, c, d, e, f, g, h
+local i, j, k, l = unpack(sparse)
+return a, b, c, d, e, f, g, h, i, j, k, l
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 8 {
-		t.Fatalf("expected 8 return values, got %d", len(returnValues))
+	if len(returnValues) != 12 {
+		t.Fatalf("expected 12 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Data != float64(10) || returnValues[1].Data != float64(20) || returnValues[2].Data != float64(30) || returnValues[3].Data != float64(40) {
@@ -2157,6 +3369,13 @@ return a, b, c, d, e, f, g, h
 
 	if returnValues[6].Type != ValueTypeNil || returnValues[7].Type != ValueTypeNil {
 		t.Fatalf("unexpected unpack(values, 5, 4) values: %#v", returnValues[6:8])
+	}
+
+	if returnValues[8].Type != ValueTypeString || returnValues[8].Data != "x" ||
+		returnValues[9].Type != ValueTypeNil ||
+		returnValues[10].Type != ValueTypeNil ||
+		returnValues[11].Type != ValueTypeString || returnValues[11].Data != "y" {
+		t.Fatalf("unexpected unpack(sparse) values: %#v", returnValues[8:12])
 	}
 }
 
@@ -2265,6 +3484,51 @@ return 0, unpack(values), select(2, pair()), xpcall(fail, handler)
 
 	if returnValues[3].Type != ValueTypeBoolean || returnValues[3].Data != false || returnValues[4].Type != ValueTypeString || returnValues[4].Data != "handled:boom" || returnValues[5].Type != ValueTypeString || returnValues[5].Data != "extra" {
 		t.Fatalf("unexpected native return-list suffix values: %#v", returnValues[3:6])
+	}
+}
+
+func TestExecStringEvaluatesNativeReturnListMixedMultivalueAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local values = { 10, 20, 30 }
+function pair()
+	return 1, 2
+end
+function handler(err)
+	return "handled:" .. err, "extra"
+end
+function fail()
+	error("boom")
+end
+return unpack(values), select(2, pair()), xpcall(fail, handler)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 5 {
+		t.Fatalf("expected 5 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(10) {
+		t.Fatalf("unexpected first native mixed return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Data != float64(2) {
+		t.Fatalf("unexpected second native mixed return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeBoolean || returnValues[2].Data != false {
+		t.Fatalf("unexpected third native mixed return value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeString || returnValues[3].Data != "handled:boom" {
+		t.Fatalf("unexpected fourth native mixed return value: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeString || returnValues[4].Data != "extra" {
+		t.Fatalf("unexpected fifth native mixed return value: %#v", returnValues[4])
 	}
 }
 
@@ -2490,7 +3754,7 @@ return (pair())
 	}
 }
 
-func TestExecStringEvaluatesTableLengthOperatorForSequence(t *testing.T) {
+func TestExecStringEvaluatesTableLengthOperatorForBoundary(t *testing.T) {
 	state := NewState()
 
 	if err := state.ExecString(`
@@ -2507,7 +3771,7 @@ return a, b
 		t.Fatalf("expected 2 return values, got %d", len(returnValues))
 	}
 
-	if returnValues[0].Data != float64(3) || returnValues[1].Data != float64(2) {
+	if returnValues[0].Data != float64(3) || returnValues[1].Data != float64(4) {
 		t.Fatalf("unexpected table length values: %#v", returnValues)
 	}
 }
@@ -3188,6 +4452,43 @@ func TestExecStringEvaluatesBuiltinPCallFailure(t *testing.T) {
 	}
 }
 
+func TestExecStringEvaluatesBuiltinPCallWithMetatableCall(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local callable = {}
+setmetatable(callable, {
+	__call = function(self, left, right)
+		return self == callable, left + right, left * right
+	end
+})
+return pcall(callable, 3, 4)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(7) {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNumber || returnValues[3].Data != float64(12) {
+		t.Fatalf("unexpected fourth return value: %#v", returnValues[3])
+	}
+}
+
 func TestExecStringEvaluatesXPCAllMultivalueAdjustment(t *testing.T) {
 	state := NewState()
 
@@ -3334,5 +4635,46 @@ return xpcall(fail, bad_handler)
 
 	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != `handler:boom` {
 		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringEvaluatesBuiltinXPCallWithMetatableCallAndHandler(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local callable = {}
+setmetatable(callable, {
+	__call = function(_, message)
+		error("boom:" .. tostring(message))
+	end
+})
+
+local handler = {}
+setmetatable(handler, {
+	__call = function(self, err)
+		return self == handler, "handled:" .. err
+	end
+})
+
+return xpcall(callable, handler)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != false {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "handled:boom:nil" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
 	}
 }
