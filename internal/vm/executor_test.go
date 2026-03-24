@@ -702,14 +702,20 @@ local g6, g6n = string.gsub("banana", "na", { na = 7 })
 local sf1 = string.format("hello %s %d", "lua", 51)
 local sf2 = string.format("%q %f %%", "hi", 1.5)
 local sf3 = string.format("%i", -7)
-return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.sub("abcdef", 2, 4), string.sub("abcdef", -3, -1), string.rep("ha", 3), string.reverse("stressed"), string.byte("ABC", 2), b1, b2, b3, string.char(65, 66, 67), f1s, f1e, f2s, f2e, f3s, f3e, f4s, f5s, f5e, m1, m2, m3, m4, gm[1], gm[2], gm2a, gm2b, table.getn(gm3), sf1, sf2, sf3, g1, g1n, g2, g2n, g3, g3n, g4, g4n, g5, g5n, g6, g6n
+local sf4 = string.format("%c%c", 65, 66)
+local sf5 = string.format("%x %X", 255, 255)
+local sf6 = string.format("%o", 64)
+local sf7 = string.format("%u", -1)
+local sf8 = string.format("%e %E", 12.5, 12.5)
+local sf9 = string.format("%g %G", 12345.5, 0.00125)
+return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.sub("abcdef", 2, 4), string.sub("abcdef", -3, -1), string.rep("ha", 3), string.reverse("stressed"), string.byte("ABC", 2), b1, b2, b3, string.char(65, 66, 67), f1s, f1e, f2s, f2e, f3s, f3e, f4s, f5s, f5e, m1, m2, m3, m4, gm[1], gm[2], gm2a, gm2b, table.getn(gm3), sf1, sf2, sf3, sf4, sf5, sf6, sf7, sf8, sf9, g1, g1n, g2, g2n, g3, g3n, g4, g4n, g5, g5n, g6, g6n
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 45 {
-		t.Fatalf("expected 45 return values, got %d", len(returnValues))
+	if len(returnValues) != 51 {
+		t.Fatalf("expected 51 return values, got %d", len(returnValues))
 	}
 
 	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(4) {
@@ -797,6 +803,12 @@ return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.su
 		30: "hello lua 51",
 		31: `"hi" 1.500000 %`,
 		32: "-7",
+		33: "AB",
+		34: "ff FF",
+		35: "100",
+		36: "4294967295",
+		37: "1.250000e+01 1.250000E+01",
+		38: "12345.5 0.00125",
 	}
 	for index, want := range expectedFormats {
 		if returnValues[index].Type != ValueTypeString || returnValues[index].Data != want {
@@ -804,52 +816,52 @@ return string.len("AbCd"), string.lower("AbCd"), string.upper("AbCd"), string.su
 		}
 	}
 
-	if returnValues[33].Type != ValueTypeString || returnValues[33].Data != "baNANA" {
-		t.Fatalf("unexpected string.gsub return value at 33: %#v", returnValues[33])
+	if returnValues[39].Type != ValueTypeString || returnValues[39].Data != "baNANA" {
+		t.Fatalf("unexpected string.gsub return value at 39: %#v", returnValues[39])
 	}
 
-	if returnValues[34].Type != ValueTypeNumber || returnValues[34].Data != float64(2) {
-		t.Fatalf("unexpected string.gsub replacement count at 34: %#v", returnValues[34])
+	if returnValues[40].Type != ValueTypeNumber || returnValues[40].Data != float64(2) {
+		t.Fatalf("unexpected string.gsub replacement count at 40: %#v", returnValues[40])
 	}
 
-	if returnValues[35].Type != ValueTypeString || returnValues[35].Data != "baNAna" {
-		t.Fatalf("unexpected string.gsub return value at 35: %#v", returnValues[35])
-	}
-
-	if returnValues[36].Type != ValueTypeNumber || returnValues[36].Data != float64(1) {
-		t.Fatalf("unexpected string.gsub replacement count at 36: %#v", returnValues[36])
-	}
-
-	if returnValues[37].Type != ValueTypeString || returnValues[37].Data != ".a.b.c." {
-		t.Fatalf("unexpected empty-pattern string.gsub result: %#v", returnValues[37])
-	}
-
-	if returnValues[38].Type != ValueTypeNumber || returnValues[38].Data != float64(4) {
-		t.Fatalf("unexpected empty-pattern string.gsub replacement count: %#v", returnValues[38])
-	}
-
-	if returnValues[39].Type != ValueTypeString || returnValues[39].Data != "banana" {
-		t.Fatalf("unexpected missing-match string.gsub result: %#v", returnValues[39])
-	}
-
-	if returnValues[40].Type != ValueTypeNumber || returnValues[40].Data != float64(0) {
-		t.Fatalf("unexpected missing-match string.gsub replacement count: %#v", returnValues[40])
-	}
-
-	if returnValues[41].Type != ValueTypeString || returnValues[41].Data != "ba<na>na" {
-		t.Fatalf("unexpected function-replacer string.gsub result: %#v", returnValues[41])
+	if returnValues[41].Type != ValueTypeString || returnValues[41].Data != "baNAna" {
+		t.Fatalf("unexpected string.gsub return value at 41: %#v", returnValues[41])
 	}
 
 	if returnValues[42].Type != ValueTypeNumber || returnValues[42].Data != float64(1) {
-		t.Fatalf("unexpected function-replacer string.gsub replacement count: %#v", returnValues[42])
+		t.Fatalf("unexpected string.gsub replacement count at 42: %#v", returnValues[42])
 	}
 
-	if returnValues[43].Type != ValueTypeString || returnValues[43].Data != "ba77" {
-		t.Fatalf("unexpected table-replacer string.gsub result: %#v", returnValues[43])
+	if returnValues[43].Type != ValueTypeString || returnValues[43].Data != ".a.b.c." {
+		t.Fatalf("unexpected empty-pattern string.gsub result: %#v", returnValues[43])
 	}
 
-	if returnValues[44].Type != ValueTypeNumber || returnValues[44].Data != float64(2) {
-		t.Fatalf("unexpected table-replacer string.gsub replacement count: %#v", returnValues[44])
+	if returnValues[44].Type != ValueTypeNumber || returnValues[44].Data != float64(4) {
+		t.Fatalf("unexpected empty-pattern string.gsub replacement count: %#v", returnValues[44])
+	}
+
+	if returnValues[45].Type != ValueTypeString || returnValues[45].Data != "banana" {
+		t.Fatalf("unexpected missing-match string.gsub result: %#v", returnValues[45])
+	}
+
+	if returnValues[46].Type != ValueTypeNumber || returnValues[46].Data != float64(0) {
+		t.Fatalf("unexpected missing-match string.gsub replacement count: %#v", returnValues[46])
+	}
+
+	if returnValues[47].Type != ValueTypeString || returnValues[47].Data != "ba<na>na" {
+		t.Fatalf("unexpected function-replacer string.gsub result: %#v", returnValues[47])
+	}
+
+	if returnValues[48].Type != ValueTypeNumber || returnValues[48].Data != float64(1) {
+		t.Fatalf("unexpected function-replacer string.gsub replacement count: %#v", returnValues[48])
+	}
+
+	if returnValues[49].Type != ValueTypeString || returnValues[49].Data != "ba77" {
+		t.Fatalf("unexpected table-replacer string.gsub result: %#v", returnValues[49])
+	}
+
+	if returnValues[50].Type != ValueTypeNumber || returnValues[50].Data != float64(2) {
+		t.Fatalf("unexpected table-replacer string.gsub replacement count: %#v", returnValues[50])
 	}
 }
 

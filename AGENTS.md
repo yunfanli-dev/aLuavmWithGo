@@ -16,12 +16,14 @@
 - 明确当前项目做到哪一步了
 - 明确当前项目处在哪个里程碑
 - 从当前进度继续，不重复做已经完成的内容
+- 如果 `ProgressLog.md` 里的近期记录不足以说明更早上下文，再继续阅读 [ProgressArchive.md](./ProgressArchive.md)
 
 ## 阅读升级规则
 
 如果仅通过 `README.md` 仍无法看明白项目目标、范围、架构或下一步方向，必须继续阅读：
 
 4. [ProjectPlan.md](./ProjectPlan.md)
+5. [ProgressArchive.md](./ProgressArchive.md)（仅当主日志里的近期记录不足以覆盖当前问题背景时）
 
 原则：
 

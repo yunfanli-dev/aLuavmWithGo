@@ -2011,6 +2011,52 @@ func formatStringTemplate(format string, args []Value) (string, error) {
 // renderStringFormatSpecifier 渲染一个当前已支持的 `string.format` 格式符。
 func renderStringFormatSpecifier(specifier byte, value Value) (string, error) {
 	switch specifier {
+	case 'c':
+		number, err := builtinInteger(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%c expects integer argument")
+		}
+
+		return string(rune(number)), nil
+	case 'x', 'X':
+		number, err := builtinInteger(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%%c expects integer argument", specifier)
+		}
+
+		if specifier == 'x' {
+			return strconv.FormatInt(int64(number), 16), nil
+		}
+
+		return strings.ToUpper(strconv.FormatInt(int64(number), 16)), nil
+	case 'o':
+		number, err := builtinInteger(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%o expects integer argument")
+		}
+
+		return strconv.FormatInt(int64(number), 8), nil
+	case 'u':
+		number, err := builtinInteger(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%u expects integer argument")
+		}
+
+		return strconv.FormatUint(uint64(uint32(number)), 10), nil
+	case 'e', 'E':
+		number, err := requireNumber(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%%c expects numeric argument", specifier)
+		}
+
+		return strconv.FormatFloat(number, specifier, 6, 64), nil
+	case 'g', 'G':
+		number, err := requireNumber(value, "string.format")
+		if err != nil {
+			return "", fmt.Errorf("string.format %%%c expects numeric argument", specifier)
+		}
+
+		return strconv.FormatFloat(number, specifier, -1, 64), nil
 	case 's':
 		if value.Type != ValueTypeString {
 			return "", fmt.Errorf("string.format %%s expects string argument")

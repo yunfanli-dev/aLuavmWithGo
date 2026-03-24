@@ -21,7 +21,7 @@
   说明：当前已支持 `pi` / `huge`、基础取整、`modf`、`fmod`、`frexp` / `ldexp`、角度/弧度转换、极值、随机、指数、自然/十进制对数，以及基础三角/反三角函数、`atan2`、`sinh`、`cosh` 和 `tanh`，但离完整 Lua 5.1 数学库仍有距离。
 
 - `string` 库仍只覆盖较小子集
-  说明：当前已支持长度、纯文本 `find` / `match` / `gmatch` / `gsub`、最小 `format`、截取、大小写、重复、反转、字节提取和按字节组装；其中 `gsub` 已支持字符串 / table / function 替换器，但仍缺少 Lua pattern 版 `find` / `match` / `gmatch` / `gsub`、capture 语义以及更完整格式化语义。
+  说明：当前已支持长度、纯文本 `find` / `match` / `gmatch` / `gsub`、最小 `format`、截取、大小写、重复、反转、字节提取和按字节组装；其中 `gsub` 已支持字符串 / table / function 替换器，`format` 已支持 `%c`、`%o`、`%u`、`%x`、`%X`、`%e`、`%E`、`%g`、`%G` 等少量高频格式符，但仍缺少 Lua pattern 版 `find` / `match` / `gmatch` / `gsub`、capture 语义以及更完整格式化语义。
 
 - `table` 库仍只覆盖较小子集
   说明：当前已支持 `getn`、`maxn`、`foreach`、`foreachi`、`insert`、`remove`、`concat`、`sort`，仍未补齐更完整的序列表辅助能力。
