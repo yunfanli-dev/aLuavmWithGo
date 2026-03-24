@@ -6,7 +6,8 @@ import (
 	"github.com/yunfanli-dev/aLuavmWithGo/internal/parser"
 )
 
-// CompileChunk compiles a parsed Lua 5.1 subset chunk into the current IR form.
+// CompileChunk 把 parser 产出的 Chunk 编译成当前执行器使用的 IR。
+// 这是前端到执行层之间的桥接入口，会把 AST 结构映射为更稳定的中间表示。
 func CompileChunk(chunk *parser.Chunk) (*Program, error) {
 	compiler := &compiler{}
 	return compiler.compileChunk(chunk)

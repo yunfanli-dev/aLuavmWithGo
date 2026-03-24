@@ -1,39 +1,39 @@
 package ir
 
-// Node is the common IR contract shared by all intermediate representation nodes.
+// Node 是所有 IR 节点共享的最小接口。
 type Node interface {
 	node()
 }
 
-// Statement marks IR nodes that can appear in a program body.
+// Statement 标记可以出现在 IR 程序语句列表中的节点。
 type Statement interface {
 	Node
 	statement()
 }
 
-// Expression marks IR nodes that can appear in expression positions.
+// Expression 标记可以出现在 IR 表达式位置中的节点。
 type Expression interface {
 	Node
 	expression()
 }
 
-// Program is the compiled top-level IR unit produced from a parsed Lua chunk.
+// Program 是由 AST 编译得到的顶层 IR 单元。
 type Program struct {
 	Statements []Statement
 }
 
-// CallStatement represents a function call used as a statement.
+// CallStatement 表示作为语句存在的函数调用 IR 节点。
 type CallStatement struct {
 	Call *CallExpression
 }
 
-// AssignStatement represents an IR assignment statement.
+// AssignStatement 表示赋值语句对应的 IR 节点。
 type AssignStatement struct {
 	Targets []Expression
 	Values  []Expression
 }
 
-// FunctionDeclarationStatement represents an IR named function declaration.
+// FunctionDeclarationStatement 表示具名函数声明对应的 IR 节点。
 type FunctionDeclarationStatement struct {
 	Name       string
 	Parameters []string
@@ -41,7 +41,7 @@ type FunctionDeclarationStatement struct {
 	Body       []Statement
 }
 
-// LocalFunctionDeclarationStatement represents an IR local function declaration.
+// LocalFunctionDeclarationStatement 表示局部函数声明对应的 IR 节点。
 type LocalFunctionDeclarationStatement struct {
 	Name       string
 	Parameters []string
@@ -49,45 +49,45 @@ type LocalFunctionDeclarationStatement struct {
 	Body       []Statement
 }
 
-// LocalAssignStatement represents an IR local assignment statement.
+// LocalAssignStatement 表示局部赋值语句对应的 IR 节点。
 type LocalAssignStatement struct {
 	Names  []string
 	Values []Expression
 }
 
-// DoStatement represents an IR scoped block.
+// DoStatement 表示作用域块对应的 IR 节点。
 type DoStatement struct {
 	Body []Statement
 }
 
-// BreakStatement represents an IR break statement.
+// BreakStatement 表示 break 语句对应的 IR 节点。
 type BreakStatement struct{}
 
-// IfClause represents one IR conditional branch.
+// IfClause 表示 IR 中的一条条件分支。
 type IfClause struct {
 	Condition Expression
 	Body      []Statement
 }
 
-// IfStatement represents an IR if statement.
+// IfStatement 表示完整 if 结构对应的 IR 节点。
 type IfStatement struct {
 	Clauses  []IfClause
 	ElseBody []Statement
 }
 
-// WhileStatement represents an IR while loop.
+// WhileStatement 表示 while 循环对应的 IR 节点。
 type WhileStatement struct {
 	Condition Expression
 	Body      []Statement
 }
 
-// RepeatStatement represents an IR repeat-until loop.
+// RepeatStatement 表示 repeat-until 循环对应的 IR 节点。
 type RepeatStatement struct {
 	Body      []Statement
 	Condition Expression
 }
 
-// NumericForStatement represents an IR numeric for-loop.
+// NumericForStatement 表示数值 for 循环对应的 IR 节点。
 type NumericForStatement struct {
 	Name  string
 	Start Expression
@@ -96,24 +96,24 @@ type NumericForStatement struct {
 	Body  []Statement
 }
 
-// GenericForStatement represents an IR generic for-in loop.
+// GenericForStatement 表示 generic for-in 循环对应的 IR 节点。
 type GenericForStatement struct {
 	Names     []string
 	Iterators []Expression
 	Body      []Statement
 }
 
-// ReturnStatement represents an IR return statement.
+// ReturnStatement 表示 return 语句对应的 IR 节点。
 type ReturnStatement struct {
 	Values []Expression
 }
 
-// IdentifierExpression represents an IR identifier reference.
+// IdentifierExpression 表示标识符引用对应的 IR 节点。
 type IdentifierExpression struct {
 	Name string
 }
 
-// CallExpression represents an IR function call.
+// CallExpression 表示函数调用对应的 IR 表达式节点。
 type CallExpression struct {
 	Callee    Expression
 	Receiver  Expression
@@ -121,64 +121,64 @@ type CallExpression struct {
 	Arguments []Expression
 }
 
-// FunctionExpression represents an IR anonymous function.
+// FunctionExpression 表示匿名函数对应的 IR 表达式节点。
 type FunctionExpression struct {
 	Parameters []string
 	IsVararg   bool
 	Body       []Statement
 }
 
-// VarargExpression represents the IR `...` expression.
+// VarargExpression 表示 IR 中的 `...` 表达式。
 type VarargExpression struct{}
 
-// ParenthesizedExpression represents grouped IR expressions and preserves single-value semantics.
+// ParenthesizedExpression 表示带括号的 IR 表达式，并保留单值语义。
 type ParenthesizedExpression struct {
 	Inner Expression
 }
 
-// IndexExpression represents table indexing in the IR.
+// IndexExpression 表示 table 索引访问对应的 IR 节点。
 type IndexExpression struct {
 	Target Expression
 	Index  Expression
 }
 
-// TableField represents one field in an IR table constructor.
+// TableField 表示 IR table 构造器中的一个字段。
 type TableField struct {
 	Key         Expression
 	Value       Expression
 	IsListField bool
 }
 
-// TableConstructorExpression represents an IR table constructor.
+// TableConstructorExpression 表示 IR table 构造器节点。
 type TableConstructorExpression struct {
 	Fields []TableField
 }
 
-// NilExpression represents the IR nil literal.
+// NilExpression 表示 IR 中的 nil 字面量。
 type NilExpression struct{}
 
-// BooleanExpression represents the IR boolean literal.
+// BooleanExpression 表示 IR 中的布尔字面量。
 type BooleanExpression struct {
 	Value bool
 }
 
-// NumberExpression represents the IR number literal.
+// NumberExpression 表示 IR 中的数字字面量。
 type NumberExpression struct {
 	Literal string
 }
 
-// StringExpression represents the IR string literal.
+// StringExpression 表示 IR 中的字符串字面量。
 type StringExpression struct {
 	Value string
 }
 
-// UnaryExpression represents an IR unary operation.
+// UnaryExpression 表示 IR 中的一元运算。
 type UnaryExpression struct {
 	Operator string
 	Operand  Expression
 }
 
-// BinaryExpression represents an IR binary operation.
+// BinaryExpression 表示 IR 中的二元运算。
 type BinaryExpression struct {
 	Left     Expression
 	Operator string

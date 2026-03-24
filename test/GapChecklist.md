@@ -9,7 +9,7 @@
   参考：[Lua51SyntaxSupport.md](../Lua51SyntaxSupport.md)
 
 - `#` 对 table 的完整长度语义仍未实现
-  说明：当前 `#` 主要可靠支持字符串。
+  说明：当前已支持字符串长度，也已支持从索引 `1` 开始的连续数组段长度；但更完整的 Lua 5.1 table 长度语义仍未补齐。
   影响：部分依赖 table 长度的 Lua 5.1 代码仍不能按标准行为运行。
 
 - generic `for` 仍主要围绕 `next` / `pairs` / `ipairs`
@@ -21,10 +21,10 @@
   说明：当前已支持基础取整、极值、随机、指数、对数和三角函数，但离完整 Lua 5.1 数学库仍有距离。
 
 - `string` 库仍只覆盖较小子集
-  说明：当前已支持长度、截取、大小写、重复、反转、字节提取和按字节组装，仍缺少 `find`、`match`、`gsub` 等高频能力。
+  说明：当前已支持长度、纯文本 `find` / `match` / `gsub`、截取、大小写、重复、反转、字节提取和按字节组装，仍缺少 Lua pattern 版 `find` / `match` / `gsub` 以及更完整替换语义。
 
 - `table` 库仍只覆盖较小子集
-  说明：当前已支持 `insert`、`remove`、`concat`、`sort`，仍未补齐更完整的序列表辅助能力。
+  说明：当前已支持 `getn`、`maxn`、`insert`、`remove`、`concat`、`sort`，仍未补齐更完整的序列表辅助能力。
 
 - upvalue、闭包和 metatable 仍未完全对齐 Lua 5.1
   说明：当前已具备最小可用链路，但更多边界行为和完整兼容性仍未系统补齐。

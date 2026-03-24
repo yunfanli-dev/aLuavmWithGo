@@ -1,19 +1,20 @@
 package lexer
 
-// TokenType identifies the lexical category produced by the Lua 5.1 subset scanner.
+// TokenType 表示扫描器产出的词法单元类别。
+// 解析器会根据它判断当前 token 在 Lua 5.1 子集语法中的角色。
 type TokenType string
 
 const (
-	// TokenEOF marks the logical end of the source stream.
+	// TokenEOF 表示源码流已经到达逻辑结尾。
 	TokenEOF TokenType = "eof"
-	// TokenIdentifier marks a Lua identifier.
+	// TokenIdentifier 表示 Lua 标识符。
 	TokenIdentifier TokenType = "identifier"
-	// TokenNumber marks a numeric literal.
+	// TokenNumber 表示数值字面量。
 	TokenNumber TokenType = "number"
-	// TokenString marks a quoted string literal.
+	// TokenString 表示字符串字面量。
 	TokenString TokenType = "string"
 
-	// Keywords.
+	// 关键字。
 	TokenAnd      TokenType = "and"
 	TokenBreak    TokenType = "break"
 	TokenDo       TokenType = "do"
@@ -36,7 +37,7 @@ const (
 	TokenUntil    TokenType = "until"
 	TokenWhile    TokenType = "while"
 
-	// Punctuation and operators.
+	// 标点和运算符。
 	TokenAssign       TokenType = "="
 	TokenPlus         TokenType = "+"
 	TokenMinus        TokenType = "-"
@@ -89,14 +90,16 @@ var keywords = map[string]TokenType{
 	"while":    TokenWhile,
 }
 
-// Position describes a token location in the original source stream.
+// Position 描述 token 在原始源码中的位置。
+// Offset 是整体偏移量，Line 和 Column 则用于面向用户的报错信息。
 type Position struct {
 	Offset int
 	Line   int
 	Column int
 }
 
-// Token holds a lexical unit produced by the scanner.
+// Token 表示扫描器产出的一项词法单元。
+// 除了类别和字面量之外，还会保留起止位置，便于后续解析和错误定位。
 type Token struct {
 	Type    TokenType
 	Literal string

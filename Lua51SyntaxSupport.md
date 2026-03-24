@@ -88,7 +88,8 @@
 
 ## 语义限制
 
-- `#` 当前只可靠支持字符串，不按 Lua 5.1 完整 table 长度语义工作
+- `#` 和 `table.getn` 当前已支持字符串或从索引 `1` 开始的连续数组段长度；`table.maxn` 当前返回表中的最大数值 key；这些能力仍不代表 Lua 5.1 完整 table 长度语义
+- `string.find` / `string.match` / `string.gsub` 当前只支持纯文本子串处理；其中 `find` / `match` 支持 Lua 风格起始下标，`gsub` 只支持字符串替换值和可选替换次数，不支持 Lua 5.1 pattern / capture / function/table replacer 语义
 - `...` 当前已支持函数参数与表达式展开，并会拒绝非法作用域中的使用，但仍未覆盖 Lua 5.1 全部边界行为
 - 虽然 generic `for` 语法已支持，但当前主要围绕 `next` / `pairs` / `ipairs` 这一最小链路使用
 

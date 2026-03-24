@@ -22,7 +22,6 @@
   `meta_tostring	object:40`
   `string	desserts	LUA`
   `math	9	7`
-  最后一行应为：`aluavm bootstrap ready`
 
 - `multivalue_showcase.lua`
   关键输出应包含：
@@ -31,9 +30,9 @@
   `pcall	false	boom`
   `table	head|left|right`
   `byte	65	90`
-  最后一行应为：`aluavm bootstrap ready`
 
 ## 备注
 
 - 这两份样例都以 `print` 输出人工可检查的结果，便于在不看单元测试的情况下快速验证主链路。
-- 当前 CLI 仍会在脚本执行后输出 `aluavm bootstrap ready`，这是预期行为。
+- 这两份样例当前也已接入 `cmd/aluavm` 的 CLI 进程级集成测试，关键输出会被自动回归校验。
+- 当前 CLI 在执行脚本成功后保持安静，不再额外输出 `aluavm bootstrap ready`。

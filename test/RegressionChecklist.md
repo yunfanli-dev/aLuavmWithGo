@@ -40,14 +40,15 @@
 - 多返回值与错误处理
   对应：`go test ./...`
   对应：`go run ./cmd/aluavm ./examples/multivalue_showcase.lua`
-  关注：赋值调整、`return`、函数实参、table 构造器最后字段展开、圆括号抑制展开、`pcall` 错误返回。
+  关注：赋值调整、`return`、函数实参、table 构造器最后字段展开、圆括号抑制展开、`pcall` / `xpcall` 错误返回，以及 generic `for` 迭代器表达式列表、`select` / `unpack` / `assert` / `next` / `pairs` / `ipairs` 等 builtin/native 多返回值结果在返回列表和其他表达式列表中的调整。
   通过标准：样例输出中应看到 `assign	1	left	right`、`pcall	false	boom`、`table	head|left|right`、`byte	65	90`。
 
 - CLI 与文件执行入口
   对应：`go run ./cmd/aluavm ./examples/runtime_showcase.lua`
   对应：`go run ./cmd/aluavm ./examples/multivalue_showcase.lua`
+  对应：`go test ./cmd/aluavm`
   关注：本地文件加载、脚本执行、标准输出、CLI 收尾输出。
-  通过标准：两份样例最后都应输出 `aluavm bootstrap ready`。
+  通过标准：样例脚本关键输出能正常出现，且脚本成功执行后不额外输出 `aluavm bootstrap ready`；CLI 集成测试会校验 stdout、stderr 与 exit code。
 
 - 执行预算保护
   对应：`go test ./...`

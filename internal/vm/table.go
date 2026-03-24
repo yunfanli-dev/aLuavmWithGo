@@ -9,7 +9,8 @@ type table struct {
 	metatable *table
 }
 
-// newTable creates the runtime storage used by the current Lua table subset.
+// newTable 创建当前 Lua table 子集使用的底层存储结构。
+// 它会初始化值映射、原始 key 映射和插入顺序记录。
 func newTable() *table {
 	return &table{
 		entries: make(map[string]Value),
@@ -17,7 +18,8 @@ func newTable() *table {
 	}
 }
 
-// get reads one table field by its normalized runtime key.
+// get 根据归一化后的运行时 key 读取一个 table 字段。
+// 如果 key 不存在，会返回 `exists=false`，而不是把缺失值偷偷转成 nil。
 func (t *table) get(key Value) (Value, bool, error) {
 	if t == nil {
 		return NilValue(), false, fmt.Errorf("index nil table")
@@ -32,7 +34,8 @@ func (t *table) get(key Value) (Value, bool, error) {
 	return value, ok, nil
 }
 
-// set stores or removes one table field by its normalized runtime key.
+// set 根据归一化后的运行时 key 写入一个 table 字段。
+// 当 value 为 nil 类型时会删除该 key；否则会更新值并维护插入顺序。
 func (t *table) set(key Value, value Value) error {
 	if t == nil {
 		return fmt.Errorf("assign into nil table")
@@ -57,7 +60,8 @@ func (t *table) set(key Value, value Value) error {
 	return nil
 }
 
-// getMetatable returns the currently attached metatable, if any.
+// getMetatable 返回当前 table 已绑定的 metatable。
+// 如果还没有设置 metatable，则返回 nil。
 func (t *table) getMetatable() *table {
 	if t == nil {
 		return nil
@@ -66,7 +70,8 @@ func (t *table) getMetatable() *table {
 	return t.metatable
 }
 
-// getProtectedMetatable returns the protected metatable view exposed by getmetatable, if configured.
+// getProtectedMetatable 返回对外暴露的受保护 metatable 视图。
+// 当 metatable 设置了 `__metatable` 时，`getmetatable` 应该看到的是这个保护值。
 func (t *table) getProtectedMetatable() (Value, bool, error) {
 	if t == nil || t.metatable == nil {
 		return NilValue(), false, nil
@@ -75,7 +80,8 @@ func (t *table) getProtectedMetatable() (Value, bool, error) {
 	return t.metatable.get(Value{Type: ValueTypeString, Data: "__metatable"})
 }
 
-// setMetatable replaces the current table metatable.
+// setMetatable 替换当前 table 绑定的 metatable。
+// 这里不做保护判断，保护逻辑由更高层 builtin 控制。
 func (t *table) setMetatable(metatable *table) {
 	if t == nil {
 		return
@@ -84,7 +90,8 @@ func (t *table) setMetatable(metatable *table) {
 	t.metatable = metatable
 }
 
-// next returns the next key/value pair after the provided key using insertion order.
+// next 按当前实现使用的插入顺序返回给定 key 之后的下一个键值对。
+// 这为 `next` / `pairs` 和 generic for 提供最小可用迭代基础。
 func (t *table) next(key Value) (Value, Value, bool, error) {
 	if t == nil {
 		return NilValue(), NilValue(), false, fmt.Errorf("iterate nil table")
@@ -115,7 +122,8 @@ func (t *table) next(key Value) (Value, Value, bool, error) {
 	return NilValue(), NilValue(), false, fmt.Errorf("invalid key to 'next'")
 }
 
-// firstEntry returns the first key/value pair in iteration order.
+// firstEntry 返回当前插入顺序中的第一个键值对。
+// 当 table 为空时，会返回 `ok=false`。
 func (t *table) firstEntry() (Value, Value, bool, error) {
 	if len(t.order) == 0 {
 		return NilValue(), NilValue(), false, nil
@@ -125,7 +133,49 @@ func (t *table) firstEntry() (Value, Value, bool, error) {
 	return t.keys[first], t.entries[first], true, nil
 }
 
-// deleteKey removes one normalized key from the table storage.
+// sequenceLength 返回从索引 1 开始的连续数组段长度。
+// 这对应当前实现里 `#table` 和 `table.getn` 共享的最小 sequence 语义。
+func (t *table) sequenceLength() (int, error) {
+	if t == nil {
+		return 0, fmt.Errorf("measure nil table")
+	}
+
+	end, err := tableSequenceEnd(t, 1)
+	if err != nil {
+		return 0, err
+	}
+
+	return end, nil
+}
+
+// maxNumericKey 返回当前 table 中存在的最大数值 key。
+// 这对应 `table.maxn` 的最小实现语义，与连续数组段长度不是同一个概念。
+func (t *table) maxNumericKey() (float64, error) {
+	if t == nil {
+		return 0, fmt.Errorf("measure nil table")
+	}
+
+	maximum := float64(0)
+	for _, key := range t.keys {
+		if key.Type != ValueTypeNumber {
+			continue
+		}
+
+		number, ok := key.Data.(float64)
+		if !ok {
+			return 0, fmt.Errorf("invalid numeric table key payload %T", key.Data)
+		}
+
+		if number > maximum {
+			maximum = number
+		}
+	}
+
+	return maximum, nil
+}
+
+// deleteKey 从 table 底层存储中移除一个已经归一化的 key。
+// 它会同时清理值映射、原始 key 映射以及插入顺序记录。
 func (t *table) deleteKey(storageKey string) {
 	delete(t.entries, storageKey)
 	delete(t.keys, storageKey)

@@ -7,34 +7,40 @@ import (
 	"github.com/yunfanli-dev/aLuavmWithGo/internal/vm"
 )
 
-// VM is the high-level entry point used by Go hosts to interact with the Lua runtime.
+// VM 是提供给 Go 宿主使用的高层入口。
+// 它把内部运行时状态封装起来，对外暴露脚本执行、宿主函数注册和运行参数配置等能力。
 type VM struct {
 	state *vm.State
 }
 
-// NewVM creates a VM with the minimum runtime state required by the current bootstrap stage.
+// NewVM 创建一个新的 VM 实例，并初始化当前最小可用运行时。
+// 返回的实例已经具备内建函数和基础全局环境，可以直接执行脚本。
 func NewVM() *VM {
 	return &VM{
 		state: vm.NewState(),
 	}
 }
 
-// ExecString executes a Lua source string through the current bootstrap pipeline.
+// ExecString 使用默认背景上下文执行一段内存中的 Lua 源码。
+// 这是最直接的入口，适合简单调用或不需要取消控制的场景。
 func (v *VM) ExecString(source string) error {
 	return v.ExecStringWithContext(context.Background(), source)
 }
 
-// ExecStringWithContext executes a Lua source string with host cancellation support.
+// ExecStringWithContext 在给定上下文控制下执行一段内存中的 Lua 源码。
+// 宿主可以通过 ctx 实现超时或主动取消，从而避免脚本长期占用执行线程。
 func (v *VM) ExecStringWithContext(ctx context.Context, source string) error {
 	return v.ExecSourceWithContext(ctx, NewStringSource("<memory>", source))
 }
 
-// ExecSource executes a loaded Lua source payload through the current bootstrap pipeline.
+// ExecSource 执行一个已经构造好的源码载荷。
+// 这个入口适合宿主先自行准备名字和内容，再交给 VM 统一执行。
 func (v *VM) ExecSource(source Source) error {
 	return v.ExecSourceWithContext(context.Background(), source)
 }
 
-// ExecSourceWithContext executes a loaded Lua source payload with host cancellation support.
+// ExecSourceWithContext 在给定上下文控制下执行一个源码载荷。
+// 它负责把公开 API 层的 Source 转成内部 VM 使用的 Source 结构。
 func (v *VM) ExecSourceWithContext(ctx context.Context, source Source) error {
 	return v.state.ExecSourceWithContext(ctx, vm.Source{
 		Name:    source.Name,
@@ -42,12 +48,14 @@ func (v *VM) ExecSourceWithContext(ctx context.Context, source Source) error {
 	})
 }
 
-// ExecFile loads a Lua file from disk and sends it through the current bootstrap pipeline.
+// ExecFile 从磁盘读取一个 Lua 文件并立即执行。
+// 如果调用方不需要显式上下文控制，可以直接使用这个便捷入口。
 func (v *VM) ExecFile(path string) error {
 	return v.ExecFileWithContext(context.Background(), path)
 }
 
-// ExecFileWithContext loads a Lua file from disk and executes it with host cancellation support.
+// ExecFileWithContext 在给定上下文控制下读取并执行 Lua 文件。
+// 它先把文件转成统一的 Source，再复用源码执行链路。
 func (v *VM) ExecFileWithContext(ctx context.Context, path string) error {
 	source, err := NewFileSource(path)
 	if err != nil {
@@ -57,19 +65,22 @@ func (v *VM) ExecFileWithContext(ctx context.Context, path string) error {
 	return v.ExecSourceWithContext(ctx, source)
 }
 
-// RegisterFunction exposes a Go host function to the Lua global environment.
+// RegisterFunction 把一个 Go 宿主函数注册到 Lua 全局环境中。
+// 注册后脚本可以按名称调用该函数，参数和返回值都通过统一的 Value 类型传递。
 func (v *VM) RegisterFunction(name string, fn func(args []Value) ([]Value, error)) error {
 	return v.state.RegisterFunction(name, func(args []vm.Value) ([]vm.Value, error) {
 		return fn(args)
 	})
 }
 
-// SetOutput changes the writer used by builtin output functions like print.
+// SetOutput 修改内建输出函数使用的目标 writer。
+// 当前主要影响 `print` 这类需要把文本写出到宿主侧的能力。
 func (v *VM) SetOutput(writer io.Writer) {
 	v.state.SetOutput(writer)
 }
 
-// SetStepLimit configures the maximum number of execution steps for one script run.
+// SetStepLimit 设置单次脚本执行允许消耗的最大步数。
+// 传入正数时会启用最小预算保护；小于等于 0 时按“不限制”处理。
 func (v *VM) SetStepLimit(limit int) {
 	v.state.SetStepLimit(limit)
 }

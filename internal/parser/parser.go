@@ -7,7 +7,8 @@ import (
 	"github.com/yunfanli-dev/aLuavmWithGo/internal/lexer"
 )
 
-// Parser consumes lexer tokens and builds a Lua 5.1 subset AST.
+// Parser 负责消费 lexer 产出的 token 流，并构建 AST。
+// 它同时维护当前读取位置以及 vararg 可见性这类语义上下文。
 type Parser struct {
 	source       string
 	tokens       []lexer.Token
@@ -15,7 +16,8 @@ type Parser struct {
 	varargScopes []bool
 }
 
-// ParseString tokenizes and parses a Lua source string into a chunk AST.
+// ParseString 对一段源码完成“扫描 + 解析”两步，直接返回根 Chunk。
+// 这是最常用的前端入口，适合不需要手动管理 token 流的调用场景。
 func ParseString(sourceName, input string) (*Chunk, error) {
 	tokens, err := lexer.Tokenize(sourceName, input)
 	if err != nil {
@@ -25,23 +27,26 @@ func ParseString(sourceName, input string) (*Chunk, error) {
 	return ParseTokens(sourceName, tokens)
 }
 
-// ParseTokens parses a pre-tokenized Lua source stream into a chunk AST.
+// ParseTokens 基于外部已经准备好的 token 流构建 AST。
+// 当调用方希望复用词法结果或单独测试 parser 时，这个入口更直接。
 func ParseTokens(sourceName string, tokens []lexer.Token) (*Chunk, error) {
 	parser := New(sourceName, tokens)
 	return parser.ParseChunk()
 }
 
-// New creates a parser for a token stream.
+// New 使用给定 token 流创建一个 parser。
+// 新 parser 默认认为自己处在 chunk 顶层，因此初始并不允许 `...` 作为当前函数体参数。
 func New(sourceName string, tokens []lexer.Token) *Parser {
 	return &Parser{
 		source: sourceName,
 		tokens: tokens,
-		// Top-level chunk is never a vararg function body.
+		// 顶层 chunk 不是可变参数函数体，因此默认不允许直接使用 `...`。
 		varargScopes: []bool{false},
 	}
 }
 
-// ParseChunk parses the root chunk node from the current token stream.
+// ParseChunk 从当前 token 流解析根 Chunk。
+// 该方法会持续读取语句直到 EOF，并记录整个 chunk 的源码跨度。
 func (p *Parser) ParseChunk() (*Chunk, error) {
 	statements, end, err := p.parseBlock(lexer.TokenEOF)
 	if err != nil {
@@ -104,12 +109,14 @@ func (p *Parser) parseStatement() (Statement, error) {
 	case lexer.TokenReturn:
 		return p.parseReturnStatement()
 	default:
-		// TODO: Extend statement parsing with remaining Lua 5.1 subset forms like repeatable block statements.
+		// TODO: 后续继续补齐剩余 Lua 5.1 子集语句形态，
+		// 当前尚未支持的语句会在这里统一报错。
 		return nil, p.errorAtCurrent(fmt.Sprintf("unsupported statement starting with %q", p.current().Type))
 	}
 }
 
-// parseDoStatement parses a block scoped by `do ... end`.
+// parseDoStatement 解析 `do ... end` 形成的局部块作用域语句。
+// 该语句自身不引入额外语义，只负责把一段语句包进独立块中。
 func (p *Parser) parseDoStatement() (Statement, error) {
 	startToken, err := p.expect(lexer.TokenDo, "expected 'do'")
 	if err != nil {
@@ -135,7 +142,8 @@ func (p *Parser) parseDoStatement() (Statement, error) {
 	}, nil
 }
 
-// parseBreakStatement parses a `break` control-flow statement.
+// parseBreakStatement 解析 `break` 控制流语句。
+// 目前 parser 只负责识别语法形态，是否处在合法循环里由更高层约束决定。
 func (p *Parser) parseBreakStatement() (Statement, error) {
 	breakToken, err := p.expect(lexer.TokenBreak, "expected 'break'")
 	if err != nil {
@@ -296,7 +304,8 @@ func (p *Parser) parseLocalFunctionDeclarationStatement() (Statement, error) {
 	}, nil
 }
 
-// parseFunctionName parses a function declaration name and method suffix in Lua function sugar.
+// parseFunctionName 解析函数声明里的目标名，以及可能存在的方法语法后缀。
+// 例如它会区分普通 `function a.b()` 和方法糖 `function a:b()`。
 func (p *Parser) parseFunctionName() (Expression, bool, error) {
 	nameToken, err := p.expect(lexer.TokenIdentifier, "expected function name")
 	if err != nil {
@@ -502,7 +511,8 @@ func (p *Parser) parseWhileStatement() (Statement, error) {
 	}, nil
 }
 
-// parseRepeatStatement parses a repeat-until loop and keeps the body visible to the terminating condition.
+// parseRepeatStatement 解析 `repeat ... until` 循环。
+// 它会保持循环体里的局部变量对终止条件可见，以贴近 Lua 的作用域规则。
 func (p *Parser) parseRepeatStatement() (Statement, error) {
 	startToken, err := p.expect(lexer.TokenRepeat, "expected 'repeat'")
 	if err != nil {
@@ -533,7 +543,8 @@ func (p *Parser) parseRepeatStatement() (Statement, error) {
 	}, nil
 }
 
-// parseForStatement parses the numeric and generic for-loop forms in the current Lua 5.1 subset.
+// parseForStatement 统一分派数值 for 和 generic for 两种形态。
+// 它会先读公共前缀，再根据后续 token 判断是哪一种循环结构。
 func (p *Parser) parseForStatement() (Statement, error) {
 	startToken, err := p.expect(lexer.TokenFor, "expected 'for'")
 	if err != nil {
@@ -593,7 +604,8 @@ func (p *Parser) parseForStatement() (Statement, error) {
 	}, nil
 }
 
-// finishNumericForStatement parses the numeric `for name = start, limit[, step] do ... end` form.
+// finishNumericForStatement 继续完成数值 for 的解析。
+// 这里处理 `for name = start, limit[, step] do ... end` 这条语法分支。
 func (p *Parser) finishNumericForStatement(startToken lexer.Token, nameToken lexer.Token) (Statement, error) {
 	startExpr, err := p.parseExpression()
 	if err != nil {
@@ -831,7 +843,8 @@ func (p *Parser) parseSuffixedExpression(allowCalls bool) (Expression, error) {
 			},
 		}
 	default:
-		// TODO: Extend primary parsing with Lua 5.1 subset forms like function expressions and table constructors.
+		// TODO: 后续继续补齐 primary expression 的剩余 Lua 5.1 子集形态，
+		// 当前未支持的表达式会在这里统一落错误。
 		return nil, p.errorAtCurrent(fmt.Sprintf("unexpected token %q in expression", token.Type))
 	}
 
@@ -1045,7 +1058,8 @@ func (p *Parser) finishCallExpression(callee Expression) (*CallExpression, error
 	return p.newCallExpression(callee, nil, "", arguments, endToken.End), nil
 }
 
-// finishTableCallExpression parses the Lua 5.1 `callee{...}` call sugar as a single table argument.
+// finishTableCallExpression 解析 `callee{...}` 这种 table call 语法糖。
+// 语义上它等价于给调用传入一个 table 实参，只是省略了圆括号。
 func (p *Parser) finishTableCallExpression(callee Expression) (*CallExpression, error) {
 	argument, err := p.parseTableConstructorExpression()
 	if err != nil {
@@ -1055,7 +1069,8 @@ func (p *Parser) finishTableCallExpression(callee Expression) (*CallExpression, 
 	return p.newCallExpression(callee, nil, "", []Expression{argument}, argument.Span().End), nil
 }
 
-// finishStringCallExpression parses the Lua 5.1 `callee"literal"` call sugar as a single string argument.
+// finishStringCallExpression 解析 `callee"literal"` 这种 string call 语法糖。
+// 语义上它等价于传入一个字符串实参，只是省略了圆括号。
 func (p *Parser) finishStringCallExpression(callee Expression) (*CallExpression, error) {
 	token, err := p.expect(lexer.TokenString, "expected string literal after callee")
 	if err != nil {
@@ -1066,7 +1081,8 @@ func (p *Parser) finishStringCallExpression(callee Expression) (*CallExpression,
 	return p.newCallExpression(callee, nil, "", []Expression{argument}, token.End), nil
 }
 
-// newCallExpression normalizes the parser's call sugar into the shared call AST shape.
+// newCallExpression 把普通调用、table call、string call 等不同语法糖统一整理成同一种 AST 形状。
+// 后续编译和执行阶段都只需要处理这个统一的调用表达式结构。
 func (p *Parser) newCallExpression(callee Expression, receiver Expression, method string, arguments []Expression, end lexer.Position) *CallExpression {
 	return &CallExpression{
 		Callee:    callee,
@@ -1080,7 +1096,8 @@ func (p *Parser) newCallExpression(callee Expression, receiver Expression, metho
 	}
 }
 
-// finishMethodCallExpression parses `receiver:name(args)` and keeps receiver evaluation single-shot.
+// finishMethodCallExpression 解析 `receiver:name(args)` 形式的方法调用。
+// 这里会显式保留 receiver，确保后续执行时只计算一次接收者表达式。
 func (p *Parser) finishMethodCallExpression(receiver Expression) (*CallExpression, error) {
 	methodToken, err := p.expect(lexer.TokenIdentifier, "expected method name after ':'")
 	if err != nil {

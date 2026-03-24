@@ -5,7 +5,8 @@ import (
 	"unicode"
 )
 
-// Scanner tokenizes Lua 5.1 subset source code into a flat token stream.
+// Scanner 负责把 Lua 5.1 子集源码切分成线性的 token 流。
+// 它维护当前位置、行列号和 rune 级输入，以便支持更准确的错误定位。
 type Scanner struct {
 	source string
 	input  []rune
@@ -14,7 +15,8 @@ type Scanner struct {
 	column int
 }
 
-// NewScanner creates a scanner for the provided Lua source payload.
+// NewScanner 基于给定源码名称和内容创建扫描器。
+// 初始化后行列号从 1 开始计数，便于与常见编辑器的定位习惯保持一致。
 func NewScanner(sourceName, input string) *Scanner {
 	return &Scanner{
 		source: sourceName,
@@ -24,7 +26,8 @@ func NewScanner(sourceName, input string) *Scanner {
 	}
 }
 
-// ScanAll consumes the entire source and returns all lexical tokens ending with EOF.
+// ScanAll 持续扫描直到读完整份源码，并返回包含 EOF 在内的完整 token 列表。
+// 调用方通常在 parser 之前使用它一次性拿到完整词法结果。
 func (s *Scanner) ScanAll() ([]Token, error) {
 	tokens := make([]Token, 0)
 	for {
@@ -40,7 +43,8 @@ func (s *Scanner) ScanAll() ([]Token, error) {
 	}
 }
 
-// NextToken returns the next lexical token from the source stream.
+// NextToken 从当前游标位置读取下一个 token。
+// 它会先跳过空白和注释，再根据当前字符分派到具体的扫描逻辑。
 func (s *Scanner) NextToken() (Token, error) {
 	if err := s.skipWhitespaceAndComments(); err != nil {
 		return Token{}, err
@@ -114,7 +118,8 @@ func (s *Scanner) NextToken() (Token, error) {
 	}
 }
 
-// Tokenize is a convenience helper for scanning a complete Lua source payload.
+// Tokenize 是面向外部调用的便捷函数。
+// 它会创建扫描器并一次性完成整份源码的扫描。
 func Tokenize(sourceName, input string) ([]Token, error) {
 	return NewScanner(sourceName, input).ScanAll()
 }
@@ -167,7 +172,8 @@ func (s *Scanner) scanNumber() (Token, error) {
 
 	literal += exponent
 
-	// TODO: Extend number scanning with Lua 5.1 hexadecimal literal support.
+	// TODO: 后续把数字扫描进一步扩展到 Lua 5.1 更完整的十六进制数字能力，
+	// 当前仍以最小可用子集为主。
 	return Token{
 		Type:    TokenNumber,
 		Literal: literal,
@@ -176,7 +182,8 @@ func (s *Scanner) scanNumber() (Token, error) {
 	}, nil
 }
 
-// scanHexNumber parses Lua 5.1 integer hexadecimal literals like `0xff`.
+// scanHexNumber 解析 Lua 5.1 子集里的整数十六进制字面量，例如 `0xff`。
+// 当前只覆盖最小整数形式，不处理更复杂的十六进制浮点等扩展语义。
 func (s *Scanner) scanHexNumber(start Position) (Token, error) {
 	literal := s.consumeWhile(func(ch rune) bool {
 		return isDigit(ch)
@@ -201,7 +208,8 @@ func (s *Scanner) scanHexNumber(start Position) (Token, error) {
 	}, nil
 }
 
-// scanExponentPart parses the optional exponent suffix in Lua decimal literals like `1e3` or `1.5e-2`.
+// scanExponentPart 解析十进制数字后面可选的指数部分。
+// 例如 `1e3`、`1.5e-2` 这类字面量都会经过这里补全指数后缀。
 func (s *Scanner) scanExponentPart(start Position) (string, error) {
 	ch, ok := s.peek()
 	if !ok || (ch != 'e' && ch != 'E') {
@@ -265,7 +273,8 @@ func (s *Scanner) scanString() (Token, error) {
 	}
 }
 
-// scanLongString parses Lua 5.1 long-bracket strings like `[[...]]` and `[=[...]=]`.
+// scanLongString 解析 Lua 5.1 的长括号字符串。
+// 当前支持 `[[...]]`、`[=[...]=]` 这类最常见的长字符串形式。
 func (s *Scanner) scanLongString() (Token, error) {
 	start := s.position()
 	level, err := s.expectLongBracketStart(start)
@@ -314,7 +323,8 @@ func (s *Scanner) scanEscape(start Position) (rune, error) {
 	case '\'':
 		return '\'', nil
 	default:
-		// TODO: Extend escape handling with Lua 5.1 numeric escapes.
+		// TODO: 后续补齐 Lua 5.1 更完整的转义序列处理，
+		// 例如数字转义等目前尚未支持的分支。
 		return 0, s.errorAt(start, fmt.Sprintf("unsupported escape sequence \\%c", ch))
 	}
 }

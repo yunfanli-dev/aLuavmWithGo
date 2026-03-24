@@ -23,7 +23,8 @@ type executor struct {
 	ctx            context.Context
 }
 
-// executeProgram evaluates the current IR subset and returns any explicit return values.
+// executeProgram 执行当前 IR 子集程序，并返回脚本显式产生的返回值。
+// 它会创建执行器、驱动语句求值，并把最终 `return` 结果整理成统一结构返回。
 func executeProgram(ctx context.Context, state *State, program *ir.Program) (*executionResult, error) {
 	if program == nil {
 		return nil, fmt.Errorf("execute nil IR program")
@@ -187,7 +188,8 @@ func (e *executor) executeWhileStatement(statement *ir.WhileStatement) (*executi
 	}
 }
 
-// executeRepeatStatement runs a repeat-until loop and evaluates the until condition in the loop body's scope.
+// executeRepeatStatement 执行 `repeat ... until` 循环。
+// 终止条件会在循环体作用域内求值，以保持与 Lua 作用域规则一致。
 func (e *executor) executeRepeatStatement(statement *ir.RepeatStatement) (*executionResult, bool, error) {
 	for {
 		e.pushScope()
@@ -221,7 +223,8 @@ func (e *executor) executeRepeatStatement(statement *ir.RepeatStatement) (*execu
 	}
 }
 
-// executeNumericForStatement evaluates the current numeric for-loop subset with start, limit, and step expressions.
+// executeNumericForStatement 执行当前支持的数值 for 循环。
+// 它会先求值起始值、终止值和步长，再按 Lua 风格边界规则推进循环变量。
 func (e *executor) executeNumericForStatement(statement *ir.NumericForStatement) (*executionResult, bool, error) {
 	startValue, err := e.evaluateExpression(statement.Start)
 	if err != nil {
@@ -282,7 +285,8 @@ func (e *executor) executeNumericForStatement(statement *ir.NumericForStatement)
 	return nil, false, nil
 }
 
-// executeGenericForStatement evaluates the current generic for-loop subset using iterator, state, and control values.
+// executeGenericForStatement 执行当前支持的 generic for 循环。
+// 它基于 iterator、state 和 control value 这三元组驱动循环展开。
 func (e *executor) executeGenericForStatement(statement *ir.GenericForStatement) (*executionResult, bool, error) {
 	iteratorValues, err := e.evaluateExpressionList(statement.Iterators)
 	if err != nil {
@@ -503,7 +507,8 @@ func (e *executor) evaluateExpression(expression ir.Expression) (Value, error) {
 	}
 }
 
-// consumeStep decrements the current script budget when step limiting is enabled.
+// consumeStep 在启用步数预算时扣减当前脚本的剩余执行步数。
+// 当预算耗尽时会直接返回错误，用于阻止明显的无限循环长期占用执行线程。
 func (e *executor) consumeStep() error {
 	if e.ctx != nil {
 		if err := e.ctx.Err(); err != nil {
@@ -567,7 +572,8 @@ func (e *executor) assignTarget(target ir.Expression, value Value) error {
 	}
 }
 
-// readTableIndex reads one table field and applies the minimal __index metatable fallback.
+// readTableIndex 读取一个 table 字段，并在需要时应用最小 `__index` 元方法回退。
+// 这条路径同时服务于方括号索引和点语法字段读取。
 func (e *executor) readTableIndex(tableValue *table, index Value) (Value, error) {
 	value, exists, err := tableValue.get(index)
 	if err != nil {
@@ -615,12 +621,14 @@ func (e *executor) readTableIndex(tableValue *table, index Value) (Value, error)
 
 		return returnValues[0], nil
 	default:
-		// TODO: Support additional Lua 5.1 metatable __index forms if needed.
+		// TODO: 后续按需要补齐 Lua 5.1 更完整的 `__index` 形态，
+		// 当前只覆盖最小可用回退路径。
 		return NilValue(), nil
 	}
 }
 
-// writeTableIndex writes one table field and applies the minimal __newindex metatable fallback.
+// writeTableIndex 写入一个 table 字段，并在需要时应用最小 `__newindex` 元方法回退。
+// 这条路径统一处理直接赋值和可能触发的元方法转发。
 func (e *executor) writeTableIndex(tableValue *table, index Value, value Value) error {
 	_, exists, err := tableValue.get(index)
 	if err != nil {
@@ -661,7 +669,8 @@ func (e *executor) writeTableIndex(tableValue *table, index Value, value Value) 
 		})
 		return err
 	default:
-		// TODO: Support additional Lua 5.1 metatable __newindex forms if needed.
+		// TODO: 后续按需要补齐 Lua 5.1 更完整的 `__newindex` 形态，
+		// 当前只覆盖最小可用回退路径。
 		return tableValue.set(index, value)
 	}
 }
@@ -715,7 +724,8 @@ func (e *executor) evaluateCallExpressionValues(expression *ir.CallExpression) (
 	return e.callFunctionValue(callee, arguments)
 }
 
-// lookupMethod resolves one method name from the current receiver value using the existing index semantics.
+// lookupMethod 基于现有索引语义从接收者上解析一个方法名。
+// 这让 `obj:method(...)` 可以复用 table 读取和 metatable 回退的既有逻辑。
 func (e *executor) lookupMethod(receiver Value, method string) (Value, error) {
 	if receiver.Type != ValueTypeTable {
 		return NilValue(), fmt.Errorf("attempt to call method %q on non-table value of type %s", method, receiver.Type)
@@ -836,7 +846,8 @@ func (e *executor) callNativeFunction(functionValue *nativeFunction, arguments [
 	return functionValue.fn(arguments)
 }
 
-// lookupMetamethod resolves one supported metatable entry from the current runtime value.
+// lookupMetamethod 从当前运行时值上解析一个受支持的 metatable 字段。
+// 当前实现只覆盖已落地的最小元方法集合。
 func (e *executor) lookupMetamethod(value Value, field string) (Value, bool, error) {
 	if value.Type != ValueTypeTable {
 		return NilValue(), false, nil
@@ -855,7 +866,8 @@ func (e *executor) lookupMetamethod(value Value, field string) (Value, bool, err
 	return metatable.get(Value{Type: ValueTypeString, Data: field})
 }
 
-// valueToString renders one runtime value and applies the minimal __tostring metatable hook for tables.
+// valueToString 把一个运行时值渲染成字符串。
+// 对 table 会优先尝试最小 `__tostring` 元方法钩子，再回退到默认格式。
 func (e *executor) valueToString(value Value) (string, error) {
 	metaToString, exists, err := e.lookupMetamethod(value, "__tostring")
 	if err != nil {
@@ -945,11 +957,25 @@ func (e *executor) evaluateUnaryExpression(expression *ir.UnaryExpression) (Valu
 	case "not":
 		return Value{Type: ValueTypeBoolean, Data: !isTruthy(operand)}, nil
 	case "#":
-		if operand.Type != ValueTypeString {
-			return NilValue(), fmt.Errorf("operator '#' expects string operand, got %s", operand.Type)
+		if operand.Type == ValueTypeString {
+			return Value{Type: ValueTypeNumber, Data: float64(len(operand.Data.(string)))}, nil
 		}
 
-		return Value{Type: ValueTypeNumber, Data: float64(len(operand.Data.(string)))}, nil
+		if operand.Type == ValueTypeTable {
+			tableValue, ok := operand.Data.(*table)
+			if !ok {
+				return NilValue(), fmt.Errorf("invalid table payload %T", operand.Data)
+			}
+
+			length, err := tableValue.sequenceLength()
+			if err != nil {
+				return NilValue(), err
+			}
+
+			return Value{Type: ValueTypeNumber, Data: float64(length)}, nil
+		}
+
+		return NilValue(), fmt.Errorf("operator '#' expects string or table operand, got %s", operand.Type)
 	default:
 		return NilValue(), fmt.Errorf("unsupported unary operator %q", expression.Operator)
 	}
@@ -1032,7 +1058,8 @@ func (e *executor) evaluateBinaryExpression(expression *ir.BinaryExpression) (Va
 	}
 }
 
-// evaluateUnaryMetamethod falls back to one supported unary metamethod when the direct operand type check fails.
+// evaluateUnaryMetamethod 在一元运算直接类型检查失败时尝试走元方法回退。
+// 当前只对已支持的一元元方法做最小兼容。
 func (e *executor) evaluateUnaryMetamethod(operand Value, metamethod string, cause error) (Value, error) {
 	metaFn, exists, err := e.lookupMetamethod(operand, metamethod)
 	if err != nil {
@@ -1055,7 +1082,8 @@ func (e *executor) evaluateUnaryMetamethod(operand Value, metamethod string, cau
 	return returnValues[0], nil
 }
 
-// evaluateBinaryArithmetic evaluates numeric arithmetic first and falls back to one supported binary metamethod.
+// evaluateBinaryArithmetic 先尝试直接做数值算术运算。
+// 如果操作数不满足直接计算条件，再回退到已支持的二元元方法路径。
 func (e *executor) evaluateBinaryArithmetic(left, right Value, operator string, metamethod string, fn func(float64, float64) float64) (Value, error) {
 	value, err := numericBinary(left, right, operator, fn)
 	if err == nil {
@@ -1065,7 +1093,8 @@ func (e *executor) evaluateBinaryArithmetic(left, right Value, operator string, 
 	return e.evaluateBinaryMetamethod(left, right, metamethod, err)
 }
 
-// evaluateBinaryMetamethod falls back to one supported binary metamethod using the left operand first, then the right.
+// evaluateBinaryMetamethod 按“先左后右”的顺序尝试解析并调用二元元方法。
+// 这与 Lua 常见的双操作数元方法查找顺序保持一致。
 func (e *executor) evaluateBinaryMetamethod(left, right Value, metamethod string, cause error) (Value, error) {
 	metaFn, exists, err := e.lookupBinaryMetamethod(left, right, metamethod)
 	if err != nil {
@@ -1092,7 +1121,8 @@ func (e *executor) evaluateBinaryMetamethod(left, right Value, metamethod string
 	return returnValues[0], nil
 }
 
-// evaluateOrderedComparison evaluates numeric ordering first and falls back to one supported comparison metamethod.
+// evaluateOrderedComparison 先尝试直接做数值比较，再回退到已支持的比较元方法。
+// 当前主要覆盖 `<`、`<=` 及其派生比较链路。
 func (e *executor) evaluateOrderedComparison(left, right Value, operator string, metamethod string, fn func(float64, float64) bool) (Value, error) {
 	value, err := comparisonBinary(left, right, operator, fn)
 	if err == nil {
@@ -1102,7 +1132,8 @@ func (e *executor) evaluateOrderedComparison(left, right Value, operator string,
 	return e.evaluateBinaryMetamethod(left, right, metamethod, err)
 }
 
-// evaluateEquality applies raw equality first, then falls back to the minimal __eq metamethod path for tables.
+// evaluateEquality 先执行原始相等性判断，再在需要时回退到最小 `__eq` 元方法路径。
+// 当前元方法相等性主要面向 table 值。
 func (e *executor) evaluateEquality(left, right Value) (Value, error) {
 	if valuesEqual(left, right) {
 		return Value{Type: ValueTypeBoolean, Data: true}, nil
@@ -1124,7 +1155,8 @@ func (e *executor) evaluateEquality(left, right Value) (Value, error) {
 	return Value{Type: ValueTypeBoolean, Data: isTruthy(value)}, nil
 }
 
-// lookupBinaryMetamethod checks the left then right operand for one supported binary metamethod entry.
+// lookupBinaryMetamethod 按先左后右的顺序查找二元元方法入口。
+// 这样可以把 Lua 的常见元方法分派规则集中收敛在一个位置处理。
 func (e *executor) lookupBinaryMetamethod(left, right Value, field string) (Value, bool, error) {
 	metaFn, exists, err := e.lookupMetamethod(left, field)
 	if err != nil {
@@ -1166,7 +1198,8 @@ func comparisonBinary(left, right Value, operator string, fn func(float64, float
 	return Value{Type: ValueTypeBoolean, Data: fn(leftNumber, rightNumber)}, nil
 }
 
-// numericForContinues applies Lua-style numeric for-loop bounds for positive and negative steps.
+// numericForContinues 根据步长正负应用 Lua 风格的数值 for 边界判断。
+// 正步长使用 `<=`，负步长使用 `>=`，从而决定循环是否继续。
 func numericForContinues(current float64, limit float64, step float64) bool {
 	if step > 0 {
 		return current <= limit

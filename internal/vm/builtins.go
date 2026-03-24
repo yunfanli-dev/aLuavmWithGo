@@ -32,7 +32,8 @@ func (s *State) registerBuiltins() {
 	s.registerBuiltinStringLibrary()
 }
 
-// registerBuiltinType installs the minimal `type` builtin.
+// registerBuiltinType 注册最小 `type` 内建函数。
+// 它返回当前值对应的运行时类型名。
 func (s *State) registerBuiltinType() {
 	_ = s.RegisterFunction("type", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -43,7 +44,8 @@ func (s *State) registerBuiltinType() {
 	})
 }
 
-// registerBuiltinToString installs the minimal `tostring` builtin.
+// registerBuiltinToString 注册最小 `tostring` 内建函数。
+// 该实现会复用执行器的字符串化逻辑，因此也能走最小 `__tostring` 钩子。
 func (s *State) registerBuiltinToString() {
 	_ = s.registerContextualFunction("tostring", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -59,7 +61,8 @@ func (s *State) registerBuiltinToString() {
 	})
 }
 
-// registerBuiltinToNumber installs the minimal `tonumber` builtin.
+// registerBuiltinToNumber 注册最小 `tonumber` 内建函数。
+// 当前主要支持数值直返和字符串到浮点数的基础转换。
 func (s *State) registerBuiltinToNumber() {
 	_ = s.RegisterFunction("tonumber", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -82,7 +85,8 @@ func (s *State) registerBuiltinToNumber() {
 	})
 }
 
-// registerBuiltinSelect installs the minimal Lua 5.1 `select` builtin for vararg slicing.
+// registerBuiltinSelect 注册最小 Lua 5.1 `select` 内建函数。
+// 当前主要用于 vararg 计数和按位置切片。
 func (s *State) registerBuiltinSelect() {
 	_ = s.RegisterFunction("select", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -119,7 +123,8 @@ func (s *State) registerBuiltinSelect() {
 	})
 }
 
-// registerBuiltinUnpack installs the minimal Lua 5.1 `unpack` builtin for array-style table slices.
+// registerBuiltinUnpack 注册最小 Lua 5.1 `unpack` 内建函数。
+// 它按当前 sequence 语义把 table 指定区间展开成多返回值。
 func (s *State) registerBuiltinUnpack() {
 	_ = s.RegisterFunction("unpack", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -185,7 +190,8 @@ func (s *State) registerBuiltinUnpack() {
 	})
 }
 
-// registerBuiltinAssert installs the minimal `assert` builtin.
+// registerBuiltinAssert 注册最小 `assert` 内建函数。
+// 条件为真时原样返回参数列表；条件为假时返回错误。
 func (s *State) registerBuiltinAssert() {
 	_ = s.RegisterFunction("assert", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -239,15 +245,19 @@ func tableSequenceEnd(tableValue *table, startIndex int) (int, error) {
 	}
 }
 
-// registerBuiltinTableLibrary installs the minimal global `table` library surface.
+// registerBuiltinTableLibrary 注册当前最小可用的全局 `table` 库入口。
+// 后续新增 table 子能力时，会继续从这里挂到全局环境。
 func (s *State) registerBuiltinTableLibrary() {
+	s.registerTableGetN()
+	s.registerTableMaxN()
 	s.registerTableInsert()
 	s.registerTableRemove()
 	s.registerTableConcat()
 	s.registerTableSort()
 }
 
-// registerBuiltinMathLibrary installs the minimal global `math` library surface.
+// registerBuiltinMathLibrary 注册当前最小可用的全局 `math` 库入口。
+// 当前只覆盖项目已落地的一小部分数值函数。
 func (s *State) registerBuiltinMathLibrary() {
 	s.registerMathAbs()
 	s.registerMathFloor()
@@ -264,8 +274,12 @@ func (s *State) registerBuiltinMathLibrary() {
 	s.registerMathCos()
 }
 
-// registerBuiltinStringLibrary installs the minimal global `string` library surface.
+// registerBuiltinStringLibrary 注册当前最小可用的全局 `string` 库入口。
+// 当前字符串库仍是子集实现，但已经覆盖若干高频文本处理能力。
 func (s *State) registerBuiltinStringLibrary() {
+	s.registerStringFind()
+	s.registerStringGSub()
+	s.registerStringMatch()
 	s.registerStringLen()
 	s.registerStringSub()
 	s.registerStringLower()
@@ -276,7 +290,52 @@ func (s *State) registerBuiltinStringLibrary() {
 	s.registerStringChar()
 }
 
-// registerTableInsert installs `table.insert` for the current sequence-style table subset.
+// registerTableGetN 注册最小 `table.getn`。
+// 它返回从索引 1 开始的连续数组段长度，与当前 `#table` 语义保持一致。
+func (s *State) registerTableGetN() {
+	_ = s.registerTableLibraryFunction("getn", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("table.getn expects 1 argument")
+		}
+
+		tableValue, err := requireBuiltinTable(args[0], "table.getn")
+		if err != nil {
+			return nil, err
+		}
+
+		endIndex, err := tableSequenceEnd(tableValue, 1)
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: float64(endIndex)}}, nil
+	})
+}
+
+// registerTableMaxN 注册最小 `table.maxn`。
+// 它返回当前 table 中存在的最大数值 key，而不是连续数组段长度。
+func (s *State) registerTableMaxN() {
+	_ = s.registerTableLibraryFunction("maxn", func(args []Value) ([]Value, error) {
+		if len(args) < 1 {
+			return nil, fmt.Errorf("table.maxn expects 1 argument")
+		}
+
+		tableValue, err := requireBuiltinTable(args[0], "table.maxn")
+		if err != nil {
+			return nil, err
+		}
+
+		maximum, err := tableValue.maxNumericKey()
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeNumber, Data: maximum}}, nil
+	})
+}
+
+// registerTableInsert 注册 `table.insert`。
+// 当前实现基于最小 sequence 语义，在连续数组段内完成插入和后移。
 func (s *State) registerTableInsert() {
 	_ = s.registerTableLibraryFunction("insert", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -335,7 +394,8 @@ func (s *State) registerTableInsert() {
 	})
 }
 
-// registerTableRemove installs `table.remove` for the current sequence-style table subset.
+// registerTableRemove 注册 `table.remove`。
+// 当前实现按最小 sequence 语义移除元素，并把后续元素左移。
 func (s *State) registerTableRemove() {
 	_ = s.registerTableLibraryFunction("remove", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -406,7 +466,8 @@ func (s *State) registerTableRemove() {
 	})
 }
 
-// registerTableConcat installs `table.concat` for the current sequence-style table subset.
+// registerTableConcat 注册 `table.concat`。
+// 当前实现只面向最小 sequence 语义，并要求被拼接值可转成字符串。
 func (s *State) registerTableConcat() {
 	_ = s.registerTableLibraryFunction("concat", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -481,7 +542,8 @@ func (s *State) registerTableConcat() {
 	})
 }
 
-// registerTableSort installs `table.sort` for the current sequence-style table subset.
+// registerTableSort 注册 `table.sort`。
+// 当前实现只排序最小 sequence 段，并支持可选比较函数。
 func (s *State) registerTableSort() {
 	_ = s.registerContextualLibraryFunction("table", "sort", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -559,7 +621,7 @@ func (s *State) registerTableSort() {
 	})
 }
 
-// registerMathAbs installs `math.abs` for numeric absolute values.
+// registerMathAbs 注册 `math.abs`，用于求绝对值。
 func (s *State) registerMathAbs() {
 	_ = s.registerLibraryFunction("math", "abs", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -575,7 +637,7 @@ func (s *State) registerMathAbs() {
 	})
 }
 
-// registerMathFloor installs `math.floor` for numeric floor rounding.
+// registerMathFloor 注册 `math.floor`，用于向下取整。
 func (s *State) registerMathFloor() {
 	_ = s.registerLibraryFunction("math", "floor", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -591,7 +653,7 @@ func (s *State) registerMathFloor() {
 	})
 }
 
-// registerMathCeil installs `math.ceil` for numeric ceil rounding.
+// registerMathCeil 注册 `math.ceil`，用于向上取整。
 func (s *State) registerMathCeil() {
 	_ = s.registerLibraryFunction("math", "ceil", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -607,7 +669,7 @@ func (s *State) registerMathCeil() {
 	})
 }
 
-// registerMathMax installs `math.max` for numeric maximum selection.
+// registerMathMax 注册 `math.max`，用于从多个数值里选出最大值。
 func (s *State) registerMathMax() {
 	_ = s.registerLibraryFunction("math", "max", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -634,7 +696,7 @@ func (s *State) registerMathMax() {
 	})
 }
 
-// registerMathMin installs `math.min` for numeric minimum selection.
+// registerMathMin 注册 `math.min`，用于从多个数值里选出最小值。
 func (s *State) registerMathMin() {
 	_ = s.registerLibraryFunction("math", "min", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -661,7 +723,7 @@ func (s *State) registerMathMin() {
 	})
 }
 
-// registerMathSqrt installs `math.sqrt` for square-root extraction.
+// registerMathSqrt 注册 `math.sqrt`，用于求平方根。
 func (s *State) registerMathSqrt() {
 	_ = s.registerLibraryFunction("math", "sqrt", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -677,7 +739,7 @@ func (s *State) registerMathSqrt() {
 	})
 }
 
-// registerMathPow installs `math.pow` for explicit exponentiation.
+// registerMathPow 注册 `math.pow`，用于显式幂运算。
 func (s *State) registerMathPow() {
 	_ = s.registerLibraryFunction("math", "pow", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -698,7 +760,8 @@ func (s *State) registerMathPow() {
 	})
 }
 
-// registerMathRandom installs `math.random` using the state's deterministic RNG.
+// registerMathRandom 注册 `math.random`。
+// 当前使用 state 内部的确定性随机源，便于测试结果可重复。
 func (s *State) registerMathRandom() {
 	_ = s.registerLibraryFunction("math", "random", func(args []Value) ([]Value, error) {
 		switch len(args) {
@@ -737,7 +800,7 @@ func (s *State) registerMathRandom() {
 	})
 }
 
-// registerMathRandomSeed installs `math.randomseed` to reseed the state's RNG.
+// registerMathRandomSeed 注册 `math.randomseed`，用于重置 state 内部随机源。
 func (s *State) registerMathRandomSeed() {
 	_ = s.registerLibraryFunction("math", "randomseed", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -754,7 +817,7 @@ func (s *State) registerMathRandomSeed() {
 	})
 }
 
-// registerMathLog installs `math.log` for natural logarithms.
+// registerMathLog 注册 `math.log`，用于自然对数计算。
 func (s *State) registerMathLog() {
 	_ = s.registerLibraryFunction("math", "log", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -770,7 +833,7 @@ func (s *State) registerMathLog() {
 	})
 }
 
-// registerMathExp installs `math.exp` for the natural exponential function.
+// registerMathExp 注册 `math.exp`，用于自然指数函数计算。
 func (s *State) registerMathExp() {
 	_ = s.registerLibraryFunction("math", "exp", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -786,7 +849,7 @@ func (s *State) registerMathExp() {
 	})
 }
 
-// registerMathSin installs `math.sin` for sine calculations in radians.
+// registerMathSin 注册 `math.sin`，按弧度计算正弦值。
 func (s *State) registerMathSin() {
 	_ = s.registerLibraryFunction("math", "sin", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -802,7 +865,7 @@ func (s *State) registerMathSin() {
 	})
 }
 
-// registerMathCos installs `math.cos` for cosine calculations in radians.
+// registerMathCos 注册 `math.cos`，按弧度计算余弦值。
 func (s *State) registerMathCos() {
 	_ = s.registerLibraryFunction("math", "cos", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -818,7 +881,177 @@ func (s *State) registerMathCos() {
 	})
 }
 
-// registerStringLen installs `string.len` for string length queries.
+// registerStringGSub 注册最小 `string.gsub`。
+// 当前只支持纯文本全局替换、字符串替换值和可选替换次数。
+func (s *State) registerStringGSub() {
+	_ = s.registerLibraryFunction("string", "gsub", func(args []Value) ([]Value, error) {
+		if len(args) < 3 {
+			return nil, fmt.Errorf("string.gsub expects at least 3 arguments")
+		}
+
+		text, err := requireStringArg(args[0], "string.gsub")
+		if err != nil {
+			return nil, err
+		}
+
+		pattern, err := requireStringArg(args[1], "string.gsub")
+		if err != nil {
+			return nil, err
+		}
+
+		replacement, err := requireStringArg(args[2], "string.gsub")
+		if err != nil {
+			return nil, err
+		}
+
+		replacementLimit := -1
+		if len(args) > 3 {
+			limit, err := builtinInteger(args[3], "string.gsub")
+			if err != nil {
+				return nil, err
+			}
+
+			if limit < 0 {
+				return nil, fmt.Errorf("string.gsub expects non-negative replacement limit")
+			}
+
+			replacementLimit = limit
+		}
+
+		// TODO: 后续补齐 Lua 5.1 更完整的 `string.gsub` 语义，
+		// 包括 pattern 匹配以及 table / function 替换器等形式。
+		if replacementLimit == 0 {
+			return []Value{
+				{Type: ValueTypeString, Data: text},
+				{Type: ValueTypeNumber, Data: float64(0)},
+			}, nil
+		}
+
+		if pattern == "" {
+			if replacementLimit < 0 {
+				replacementLimit = len(text) + 1
+			}
+
+			result, replacements := replaceEmptyStringMatches(text, replacement, replacementLimit)
+			return []Value{
+				{Type: ValueTypeString, Data: result},
+				{Type: ValueTypeNumber, Data: float64(replacements)},
+			}, nil
+		}
+
+		result, replacements := replacePlainSubstrings(text, pattern, replacement, replacementLimit)
+		return []Value{
+			{Type: ValueTypeString, Data: result},
+			{Type: ValueTypeNumber, Data: float64(replacements)},
+		}, nil
+	})
+}
+
+// registerStringFind 注册最小 `string.find`。
+// 当前只支持纯文本查找和 Lua 风格起始下标。
+func (s *State) registerStringFind() {
+	_ = s.registerLibraryFunction("string", "find", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("string.find expects at least 2 arguments")
+		}
+
+		text, err := requireStringArg(args[0], "string.find")
+		if err != nil {
+			return nil, err
+		}
+
+		pattern, err := requireStringArg(args[1], "string.find")
+		if err != nil {
+			return nil, err
+		}
+
+		startIndex := 1
+		if len(args) > 2 {
+			start, err := builtinInteger(args[2], "string.find")
+			if err != nil {
+				return nil, err
+			}
+
+			startIndex = start
+		}
+
+		// TODO: 后续补齐 Lua 5.1 的 pattern 匹配能力，
+		// 当前实现始终按纯文本子串查找处理。
+		searchStart := normalizeStringStart(len(text), startIndex)
+		if pattern == "" {
+			return []Value{
+				{Type: ValueTypeNumber, Data: float64(searchStart)},
+				{Type: ValueTypeNumber, Data: float64(searchStart - 1)},
+			}, nil
+		}
+
+		if searchStart > len(text) {
+			return []Value{NilValue()}, nil
+		}
+
+		matchOffset := strings.Index(text[searchStart-1:], pattern)
+		if matchOffset < 0 {
+			return []Value{NilValue()}, nil
+		}
+
+		matchStart := searchStart + matchOffset
+		matchEnd := matchStart + len(pattern) - 1
+		return []Value{
+			{Type: ValueTypeNumber, Data: float64(matchStart)},
+			{Type: ValueTypeNumber, Data: float64(matchEnd)},
+		}, nil
+	})
+}
+
+// registerStringMatch 注册最小 `string.match`。
+// 当前只支持纯文本匹配提取和 Lua 风格起始下标。
+func (s *State) registerStringMatch() {
+	_ = s.registerLibraryFunction("string", "match", func(args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("string.match expects at least 2 arguments")
+		}
+
+		text, err := requireStringArg(args[0], "string.match")
+		if err != nil {
+			return nil, err
+		}
+
+		pattern, err := requireStringArg(args[1], "string.match")
+		if err != nil {
+			return nil, err
+		}
+
+		startIndex := 1
+		if len(args) > 2 {
+			start, err := builtinInteger(args[2], "string.match")
+			if err != nil {
+				return nil, err
+			}
+
+			startIndex = start
+		}
+
+		// TODO: 后续补齐 Lua 5.1 的 pattern 和 capture 语义，
+		// 当前实现只提取纯文本子串匹配结果。
+		searchStart := normalizeStringStart(len(text), startIndex)
+		if pattern == "" {
+			return []Value{{Type: ValueTypeString, Data: ""}}, nil
+		}
+
+		if searchStart > len(text) {
+			return []Value{NilValue()}, nil
+		}
+
+		matchOffset := strings.Index(text[searchStart-1:], pattern)
+		if matchOffset < 0 {
+			return []Value{NilValue()}, nil
+		}
+
+		return []Value{{Type: ValueTypeString, Data: pattern}}, nil
+	})
+}
+
+// registerStringLen 注册 `string.len`，用于获取字符串长度。
 func (s *State) registerStringLen() {
 	_ = s.registerLibraryFunction("string", "len", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -834,7 +1067,8 @@ func (s *State) registerStringLen() {
 	})
 }
 
-// registerStringSub installs `string.sub` for substring extraction using Lua-style indices.
+// registerStringSub 注册 `string.sub`。
+// 当前按 Lua 风格索引规则提取子串，支持负索引。
 func (s *State) registerStringSub() {
 	_ = s.registerLibraryFunction("string", "sub", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -870,7 +1104,8 @@ func (s *State) registerStringSub() {
 	})
 }
 
-// registerStringLower installs `string.lower` for ASCII case folding through Go's strings package.
+// registerStringLower 注册 `string.lower`。
+// 当前通过 Go 的字符串工具做基础大小写折叠。
 func (s *State) registerStringLower() {
 	_ = s.registerLibraryFunction("string", "lower", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -886,7 +1121,8 @@ func (s *State) registerStringLower() {
 	})
 }
 
-// registerStringUpper installs `string.upper` for ASCII case folding through Go's strings package.
+// registerStringUpper 注册 `string.upper`。
+// 当前通过 Go 的字符串工具做基础大小写折叠。
 func (s *State) registerStringUpper() {
 	_ = s.registerLibraryFunction("string", "upper", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -902,7 +1138,7 @@ func (s *State) registerStringUpper() {
 	})
 }
 
-// registerStringRep installs `string.rep` for repeated string construction.
+// registerStringRep 注册 `string.rep`，用于重复构造字符串。
 func (s *State) registerStringRep() {
 	_ = s.registerLibraryFunction("string", "rep", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -927,7 +1163,7 @@ func (s *State) registerStringRep() {
 	})
 }
 
-// registerStringReverse installs `string.reverse` for string reversal.
+// registerStringReverse 注册 `string.reverse`，用于反转字符串。
 func (s *State) registerStringReverse() {
 	_ = s.registerLibraryFunction("string", "reverse", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -948,7 +1184,8 @@ func (s *State) registerStringReverse() {
 	})
 }
 
-// registerStringByte installs `string.byte` for byte extraction over the current ASCII-oriented string subset.
+// registerStringByte 注册 `string.byte`。
+// 当前按面向字节的最小字符串子集返回指定范围内的字节值。
 func (s *State) registerStringByte() {
 	_ = s.registerLibraryFunction("string", "byte", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -994,7 +1231,7 @@ func (s *State) registerStringByte() {
 	})
 }
 
-// registerStringChar installs `string.char` for ASCII byte assembly.
+// registerStringChar 注册 `string.char`，用于把字节值组装成字符串。
 func (s *State) registerStringChar() {
 	_ = s.registerLibraryFunction("string", "char", func(args []Value) ([]Value, error) {
 		var builder strings.Builder
@@ -1019,7 +1256,8 @@ func (s *State) registerTableLibraryFunction(name string, fn NativeFunction) err
 	return s.registerLibraryFunction("table", name, fn)
 }
 
-// registerContextualLibraryFunction installs a builtin that needs executor access under a library table.
+// registerContextualLibraryFunction 在某个库表下注册需要访问 executor 上下文的内建函数。
+// 这类函数除了参数外，还需要读取或操作当前执行器状态。
 func (s *State) registerContextualLibraryFunction(libraryName string, name string, fn contextualNativeFunction) error {
 	library, err := s.ensureLibraryTable(libraryName)
 	if err != nil {
@@ -1044,7 +1282,8 @@ func (s *State) registerLibraryFunction(libraryName string, name string, fn Nati
 	})
 }
 
-// tableSortLess evaluates one `table.sort` comparison using either a custom comparator or the runtime's `<` semantics.
+// tableSortLess 执行一次 `table.sort` 比较。
+// 它会优先使用自定义比较器；如果没有提供，则回退到运行时自身的 `<` 语义。
 func (e *executor) tableSortLess(left, right Value, comparator Value, hasComparator bool) (bool, error) {
 	if hasComparator {
 		returnValues, err := e.callFunctionValue(comparator, []Value{left, right})
@@ -1076,7 +1315,7 @@ func (e *executor) tableSortLess(left, right Value, comparator Value, hasCompara
 	return flag, nil
 }
 
-// requireStringArg unwraps a builtin string argument and validates its runtime type.
+// requireStringArg 取出一个内建函数需要的字符串参数，并验证运行时类型是否正确。
 func requireStringArg(value Value, name string) (string, error) {
 	if value.Type != ValueTypeString {
 		return "", fmt.Errorf("%s expects string argument", name)
@@ -1090,7 +1329,21 @@ func requireStringArg(value Value, name string) (string, error) {
 	return text, nil
 }
 
-// normalizeStringRange converts Lua-style substring bounds into a clamped 1-based closed interval.
+// normalizeStringStart 把 Lua 风格字符串起始索引转换为夹紧后的 1 基位置。
+func normalizeStringStart(length int, start int) int {
+	if start < 0 {
+		start = length + start + 1
+	}
+	if start < 1 {
+		start = 1
+	}
+	if start > length+1 {
+		start = length + 1
+	}
+	return start
+}
+
+// normalizeStringRange 把 Lua 风格的字符串区间边界转换成夹紧后的 1 基闭区间。
 func normalizeStringRange(length int, start int, end int) (int, int) {
 	if start < 0 {
 		start = length + start + 1
@@ -1105,6 +1358,61 @@ func normalizeStringRange(length int, start int, end int) (int, int) {
 		end = length
 	}
 	return start, end
+}
+
+// replacePlainSubstrings 按从左到右的顺序执行纯文本子串替换，并支持可选替换次数限制。
+func replacePlainSubstrings(text string, pattern string, replacement string, limit int) (string, int) {
+	if pattern == "" {
+		return text, 0
+	}
+
+	if limit < 0 {
+		return strings.ReplaceAll(text, pattern, replacement), strings.Count(text, pattern)
+	}
+
+	var builder strings.Builder
+	searchStart := 0
+	replacements := 0
+	for replacements < limit {
+		matchOffset := strings.Index(text[searchStart:], pattern)
+		if matchOffset < 0 {
+			break
+		}
+
+		matchStart := searchStart + matchOffset
+		builder.WriteString(text[searchStart:matchStart])
+		builder.WriteString(replacement)
+		searchStart = matchStart + len(pattern)
+		replacements++
+	}
+
+	builder.WriteString(text[searchStart:])
+	return builder.String(), replacements
+}
+
+// replaceEmptyStringMatches 实现空模式下最小 `gsub` 行为。
+// 它会在字符串边界之间插入替换值，并返回实际替换次数。
+func replaceEmptyStringMatches(text string, replacement string, limit int) (string, int) {
+	if limit <= 0 {
+		return text, 0
+	}
+
+	var builder strings.Builder
+	replacements := 0
+	if replacements < limit {
+		builder.WriteString(replacement)
+		replacements++
+	}
+
+	for index := 0; index < len(text); index++ {
+		builder.WriteByte(text[index])
+		if replacements < limit {
+			builder.WriteString(replacement)
+			replacements++
+		}
+	}
+
+	return builder.String(), replacements
 }
 
 func (s *State) ensureLibraryTable(name string) (*table, error) {
@@ -1139,7 +1447,7 @@ func requireBuiltinTable(value Value, name string) (*table, error) {
 	return tableValue, nil
 }
 
-// registerBuiltinError installs the minimal `error` builtin.
+// registerBuiltinError 注册最小 `error` 内建函数。
 func (s *State) registerBuiltinError() {
 	_ = s.RegisterFunction("error", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -1150,7 +1458,8 @@ func (s *State) registerBuiltinError() {
 	})
 }
 
-// registerBuiltinNext installs the table iteration primitive used by generic for loops.
+// registerBuiltinNext 注册 `next`。
+// 它是 generic for、`pairs` 等最小迭代能力使用的基础原语。
 func (s *State) registerBuiltinNext() {
 	_ = s.RegisterFunction("next", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -1184,7 +1493,7 @@ func (s *State) registerBuiltinNext() {
 	})
 }
 
-// registerBuiltinPairs installs the minimal `pairs` builtin backed by `next`.
+// registerBuiltinPairs 注册最小 `pairs`，其实现直接基于 `next`。
 func (s *State) registerBuiltinPairs() {
 	_ = s.RegisterFunction("pairs", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -1204,7 +1513,7 @@ func (s *State) registerBuiltinPairs() {
 	})
 }
 
-// registerBuiltinIPairs installs the minimal sequential array iterator.
+// registerBuiltinIPairs 注册最小 `ipairs` 顺序数组迭代器。
 func (s *State) registerBuiltinIPairs() {
 	iterator := &nativeFunction{
 		name: "ipairs_iterator",
@@ -1265,7 +1574,7 @@ func (s *State) registerBuiltinIPairs() {
 	})
 }
 
-// registerBuiltinPCall installs the minimal protected-call builtin.
+// registerBuiltinPCall 注册最小 `pcall` 保护调用内建函数。
 func (s *State) registerBuiltinPCall() {
 	_ = s.registerContextualFunction("pcall", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -1294,7 +1603,8 @@ func (s *State) registerBuiltinPCall() {
 	})
 }
 
-// registerBuiltinRawEqual installs the minimal `rawequal` builtin that bypasses __eq.
+// registerBuiltinRawEqual 注册最小 `rawequal`。
+// 它会绕过 `__eq` 元方法，直接执行原始相等性判断。
 func (s *State) registerBuiltinRawEqual() {
 	_ = s.RegisterFunction("rawequal", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -1305,7 +1615,8 @@ func (s *State) registerBuiltinRawEqual() {
 	})
 }
 
-// registerBuiltinXPCall installs the minimal Lua 5.1 `xpcall` builtin with an error handler callback.
+// registerBuiltinXPCall 注册最小 Lua 5.1 `xpcall`。
+// 当前支持传入错误处理函数，并在失败时走对应回调。
 func (s *State) registerBuiltinXPCall() {
 	_ = s.registerContextualFunction("xpcall", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -1349,7 +1660,7 @@ func (s *State) registerBuiltinXPCall() {
 	})
 }
 
-// registerBuiltinGetMetatable installs the minimal table metatable getter.
+// registerBuiltinGetMetatable 注册最小 `getmetatable`。
 func (s *State) registerBuiltinGetMetatable() {
 	_ = s.RegisterFunction("getmetatable", func(args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -1383,7 +1694,7 @@ func (s *State) registerBuiltinGetMetatable() {
 	})
 }
 
-// registerBuiltinSetMetatable installs the minimal table metatable setter.
+// registerBuiltinSetMetatable 注册最小 `setmetatable`。
 func (s *State) registerBuiltinSetMetatable() {
 	_ = s.RegisterFunction("setmetatable", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -1424,7 +1735,8 @@ func (s *State) registerBuiltinSetMetatable() {
 	})
 }
 
-// registerBuiltinRawGet installs direct table reads that bypass metatable __index logic.
+// registerBuiltinRawGet 注册 `rawget`。
+// 它会直接读取 table 字段，绕过 `__index` 元方法逻辑。
 func (s *State) registerBuiltinRawGet() {
 	_ = s.RegisterFunction("rawget", func(args []Value) ([]Value, error) {
 		if len(args) < 2 {
@@ -1453,7 +1765,8 @@ func (s *State) registerBuiltinRawGet() {
 	})
 }
 
-// registerBuiltinRawSet installs direct table writes that bypass metatable __newindex logic.
+// registerBuiltinRawSet 注册 `rawset`。
+// 它会直接写入 table 字段，绕过 `__newindex` 元方法逻辑。
 func (s *State) registerBuiltinRawSet() {
 	_ = s.RegisterFunction("rawset", func(args []Value) ([]Value, error) {
 		if len(args) < 3 {
