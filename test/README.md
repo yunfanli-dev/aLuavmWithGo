@@ -57,11 +57,18 @@
 - Lua 5.1 子集的 `repeat-until` 与数值 `for`
 - Lua 5.1 子集的 generic `for` 与 `pairs` / `ipairs` / `next`
 - Lua 5.1 子集的最小 metatable 读写行为
+  说明：当前已直接覆盖 `setmetatable(target, nil)` 的最小移除语义、移除后 `getmetatable(target)` 回到 `nil` 的路径，以及 `getmetatable` / `setmetatable` 的最小参数个数、非 table 首参和非法第二参数规则。
+  说明：当前已直接覆盖 `__index` / `__newindex` 函数回退收到原 table、自身 key 和写入值的最小传参顺序。
 - Lua 5.1 子集的 `__tostring`、`__call`、`rawget`、`rawset`
+  说明：当前已直接覆盖 table callable 会把原 table 作为 `__call` 的第一个参数传入，后续显式实参保持原顺序。
+  说明：当前也已直接覆盖 `rawget` / `rawset` 的最小参数个数、非 table 首参报错路径，以及 `rawset` 返回原 table、`rawget` 读不到返回 `nil` 的最小返回值语义。
 - Lua 5.1 子集的基础算术与拼接元方法
+  说明：当前已直接覆盖 `__concat` 在左右操作数都可提供元方法时按“先左后右”查找的最小优先级。
 - Lua 5.1 子集的基础比较元方法
+  说明：当前已直接覆盖共享 `__eq` / `__lt` / `__le` 规则，以及 `<=` / `>=` 优先走共享 `__le`、仅在 `__le` 缺失时才经共享 `__lt` 回退，且“不共享则报错”的最小路径。
 - Lua 5.1 子集的 `__metatable` 保护行为
 - Lua 5.1 子集的最小 `#table` 正整数边界长度语义
+  说明：当前已直接覆盖 dense table、存在索引 `1` 的 sparse table、empty table 和缺失前缀索引的 sparse table 这几类最小边界。
 - Lua 5.1 子集的 `do ... end` 与 `break`
 - Lua 5.1 子集的基础 `vararg`
 - Lua 5.1 子集的 table 构造器最后数组字段多返回值展开
@@ -82,8 +89,8 @@
 - 当前已支持 Go 宿主向 Lua 注册基础函数、最小 preload 模块 loader、最小自定义 module searcher、最小直接 loaded-module 注入，并内置最小 `print`；标准库仍远未完整。
 - 当前已内置 `print`、`clock_ms`、`type`、`tostring`、`tonumber`、`getfenv`、`setfenv`、`module`、`require`、最小 `package` / `package.preload` / `package.loaders` / `package.searchpath` / `package.seeall`、`select`、`unpack`、`assert`、`error`、`pcall`、`xpcall`、`next`、`pairs`、`ipairs`、`rawequal`，以及最小 `table.getn` / `table.maxn` / `table.foreach` / `table.foreachi` / `table.insert` / `table.remove` / `table.concat` / `table.sort`、`math.pi` / `math.huge`、`math.abs` / `math.floor` / `math.ceil` / `math.modf` / `math.mod` / `math.fmod` / `math.deg` / `math.rad` / `math.frexp` / `math.ldexp` / `math.max` / `math.min` / `math.sqrt` / `math.pow` / `math.random` / `math.randomseed` / `math.log` / `math.log10` / `math.exp` / `math.sinh` / `math.cosh` / `math.tanh` / `math.sin` / `math.cos` / `math.tan` / `math.atan` / `math.atan2` / `math.asin` / `math.acos` 和 `string.find` / `string.match` / `string.gfind` / `string.gmatch` / `string.gsub` / `string.format` / `string.len` / `string.sub` / `string.lower` / `string.upper` / `string.rep` / `string.reverse` / `string.byte` / `string.char`；这仍只是较小的基础内建子集。
 - 当前已支持 `error`、`pcall`、基础 `vararg`，并支持最后一个函数调用或 `...` 在返回列表中的多返回值展开、table 构造器最后一个数组字段的展开，以及圆括号抑制展开的单值语义；更完整的 Lua 多返回值规则仍未全部覆盖。
-- 当前回归测试已覆盖多返回值在返回列表、赋值、空 `vararg`、`vararg` 赋值、函数实参列表、`vararg` 实参列表、方法调用、`pcall` / `xpcall` 成功失败路径、`select` / `unpack` 默认边界长度，以及 table 构造器最后数组字段中的常见调整规则、`select` / `unpack` / `pcall` / `xpcall` 展开抑制、`assert` / `next` 展开与圆括号抑制、`pairs` / `ipairs` 展开与圆括号抑制，和 `...`、`assert` / `select` / `unpack`、`select(2, pcall(...))` / `select(2, xpcall(...))` 作为 generic `for` 最后迭代表达式时的展开语义，以及这些路径在圆括号下的单值抑制；更完整的 Lua 多返回值边界仍未全部覆盖。
+- 当前回归测试已覆盖多返回值在返回列表、赋值、空 `vararg`、`vararg` 赋值、函数实参列表、`vararg` 实参列表、方法调用、`pcall` / `xpcall` 成功失败路径、`select` / `unpack` 默认边界长度，以及 table 构造器最后数组字段中的常见调整规则、`select` / `unpack` / `pcall` / `xpcall` 展开抑制、`assert` / `next` 展开与圆括号抑制、`pairs` / `ipairs` 展开与圆括号抑制，和 `assert` / `next` / `pairs` / `ipairs` 在返回列表里的非末尾单值 / 末尾展开调整、`...`、`assert` / `select` / `unpack`、`select(2, pcall(...))` / `select(2, xpcall(...))` 作为 generic `for` 最后迭代表达式时的展开语义、这些路径在圆括号下的单值抑制，以及这些调用位于 generic `for` 非末尾位置时的单值语义；更完整的 Lua 多返回值边界仍未全部覆盖。
 - 当前 `require` / `package` / `module` 已覆盖相对当前源码目录的最小文件模块加载、`package.loaded` 缓存复用 / 手动预填、`package.preload` 内存 loader、`package.path` 搜索模板、`package.loaders` 自定义 searcher、`package.searchpath` 路径探测、`package.seeall`、最小 `module(...)` 表注册、调用它的 Lua 帧切到模块环境、点分模块路径挂到调用点当前可见环境、`package.seeall` 和 `require` 子模块继续沿用调用点当前可见环境、`require` 子文件里再走 `module(..., package.seeall)` 时也会保持这套环境视角、在自定义函数环境里定义的 `package.preload` / 脚本侧 `package.loaders` loader 也已有交叉回归覆盖其后续 `require` 调用链、宿主侧 preload 模块、host searcher 和直接 loaded-module 注入也已有 API 回归覆盖函数环境里的 `require` 调用链、后置 `package.seeall(_M)` 不会再回退到模块表自身、后置 `package.seeall(_M)` 在自定义函数环境下也会继续沿用该函数环境并保持模块路径写回同一环境、`seeall` 内部状态不会污染 Lua 可见 metatable 字段、顶层 chunk 下 `getfenv(0)` 同步观察模块环境、宿主侧 preload 模块注册、宿主侧自定义 searcher 注册、宿主侧直接 loaded-module 注入、无返回值模块回落为 `true`，以及明显循环加载、`package.loaded = nil` 后重新加载和 `package.loaded = false` 后重新加载的基础回归；完整 Lua 5.1 `package` / 环境语义仍未实现。
 - 当前已支持 `{}`、键值字段、`t[k]`、`t.name` 的最小读写，以及基础 `setmetatable` / `getmetatable`、`__metatable` 保护、`__index` / `__newindex`、`__tostring`、`__call`、`rawget`、`rawset`、`rawequal`、`__add`、`__sub`、`__mul`、`__div`、`__mod`、`__pow`、`__unm`、`__concat`、`__eq`、`__lt`、`__le`，以及非法 `__index` / `__newindex` 元方法值和明显链式环、非法 `__call` 链式自引用或环的基础报错路径，还有算术系对可解析数字字符串的最小强转、原生 `..` 对“双方都必须是字符串或数字”的最小收口、同类型字符串的直接有序比较、最小 `#table` / `table.getn` 正整数边界长度语义、`table.maxn` 最大数值键语义、`table.foreach` / `table.foreachi` 对 `__call` 和当前边界长度的最小复用、`table.concat` 对当前边界长度和 `__tostring` 的最小复用、`table.insert` / `table.remove` 对当前边界长度的最小复用、`table.sort` 对当前边界长度、`__lt` 和 `__call` comparator 的最小复用、table / function key 的对象身份匹配，以及 `pcall` / `xpcall` 对 `__call` 的最小复用、`__eq` 共享元方法规则、`__lt` 共享元方法规则和 `<=` / `>=` 对共享 `__le` / 反向 `__lt` 的最小回退；完整 table 行为仍未实现。
 - 当前已支持 `local function`、匿名函数表达式和基础 upvalue 读写；闭包仍未覆盖完整 Lua 5.1 upvalue 语义。
-- 当前 generic `for` 已覆盖 `pairs` / `ipairs` / `next` 主链路，并已补充自定义 iterator 三元组、带 `__call` 的 iterator、`string.gmatch` 接入循环，以及 `...` / builtin / protected call 作为最后迭代表达式时的多返回值调整回归；更完整的迭代器兼容性仍待补齐。
+- 当前 generic `for` 已覆盖 `pairs` / `ipairs` / `next` 主链路，并已补充自定义 iterator 三元组、带 `__call` 的 iterator、`string.gmatch` 接入循环，以及 `...` / builtin / protected call 作为最后迭代表达式时的多返回值调整回归和作为非末尾迭代表达式时的单值语义回归；更完整的迭代器兼容性仍待补齐。

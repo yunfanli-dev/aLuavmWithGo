@@ -1466,6 +1466,15 @@ func (e *executor) evaluateOrderedComparison(left, right Value, directOperator s
 	}
 
 	if metamethod == "__le" {
+		value, sharedErr := e.evaluateSharedBinaryMetamethod(left, right, "__le", nil)
+		if sharedErr != nil {
+			return NilValue(), sharedErr
+		}
+
+		if value.Type != ValueTypeNil {
+			return value, nil
+		}
+
 		value, ok, fallbackErr := e.evaluateLessEqualFallback(left, right)
 		if fallbackErr != nil {
 			return NilValue(), fallbackErr

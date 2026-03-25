@@ -8,6 +8,28 @@ import (
 	"testing"
 )
 
+// mustGetTableNumber 用于在测试里读取 table 指定数值索引上的 number 值。
+// 它会在键缺失、值类型错误或读取失败时直接让测试失败。
+func mustGetTableNumber(t *testing.T, tableValue *table, index int) float64 {
+	t.Helper()
+
+	value, exists, err := tableValue.get(Value{Type: ValueTypeNumber, Data: float64(index)})
+	if err != nil {
+		t.Fatalf("read table index %d: %v", index, err)
+	}
+
+	if !exists {
+		t.Fatalf("expected table index %d to exist", index)
+	}
+
+	number, ok := value.Data.(float64)
+	if value.Type != ValueTypeNumber || !ok {
+		t.Fatalf("expected table index %d to be number, got %#v", index, value)
+	}
+
+	return number
+}
+
 func TestExecStringEvaluatesArithmeticAndReturn(t *testing.T) {
 	state := NewState()
 
@@ -2435,6 +2457,66 @@ return target.answer, writes.answer
 	}
 }
 
+func TestExecStringPassesTableAndArgumentsToIndexMetamethods(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+local seen_index_self = false
+local seen_newindex_self = false
+local seen_index_key = nil
+local seen_newindex_key = nil
+local seen_newindex_value = nil
+
+setmetatable(target, {
+	__index = function(self, key)
+		seen_index_self = self == target
+		seen_index_key = key
+		return "missing:" .. key
+	end,
+	__newindex = function(self, key, value)
+		seen_newindex_self = self == target
+		seen_newindex_key = key
+		seen_newindex_value = value
+	end
+})
+
+target.answer = 41
+return target.answer, seen_index_self, seen_index_key, seen_newindex_self, seen_newindex_key, seen_newindex_value
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 6 {
+		t.Fatalf("expected 6 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "missing:answer" {
+		t.Fatalf("unexpected __index result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected __index self identity result: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeString || returnValues[2].Data != "answer" {
+		t.Fatalf("unexpected __index key arg: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeBoolean || returnValues[3].Data != true {
+		t.Fatalf("unexpected __newindex self identity result: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Type != ValueTypeString || returnValues[4].Data != "answer" {
+		t.Fatalf("unexpected __newindex key arg: %#v", returnValues[4])
+	}
+
+	if returnValues[5].Type != ValueTypeNumber || returnValues[5].Data != float64(41) {
+		t.Fatalf("unexpected __newindex value arg: %#v", returnValues[5])
+	}
+}
+
 func TestExecStringRejectsInvalidMetatableIndexTarget(t *testing.T) {
 	state := NewState()
 
@@ -2557,6 +2639,43 @@ return callable(5)
 	}
 }
 
+func TestExecStringPassesCallableTableAsFirstCallArgument(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local callable = { base = 10 }
+setmetatable(callable, {
+	__call = function(self, a, b)
+		return self.base, a, b, self == callable
+	end
+})
+return callable(3, 4)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(10) {
+		t.Fatalf("unexpected self.base value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(3) {
+		t.Fatalf("unexpected first explicit arg: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(4) {
+		t.Fatalf("unexpected second explicit arg: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeBoolean || returnValues[3].Data != true {
+		t.Fatalf("unexpected self identity result: %#v", returnValues[3])
+	}
+}
+
 func TestExecStringRejectsMetatableCallLoop(t *testing.T) {
 	state := NewState()
 
@@ -2667,6 +2786,41 @@ return -lhs, lhs .. rhs
 
 	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "joined" {
 		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringPrefersLeftConcatMetamethod(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local lhs = {}
+local rhs = {}
+setmetatable(lhs, {
+	__concat = function(_, _)
+		return "left"
+	end
+})
+setmetatable(rhs, {
+	__concat = function(_, _)
+		return "right"
+	end
+})
+return lhs .. rhs, rhs .. lhs
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "left" {
+		t.Fatalf("unexpected lhs concat result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "right" {
+		t.Fatalf("unexpected rhs concat result: %#v", returnValues[1])
 	}
 }
 
@@ -2815,6 +2969,92 @@ return low <= high, high <= low, high >= low, low >= high
 	}
 }
 
+func TestExecStringRequiresSharedLessThanMetamethodForLessEqualFallback(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local lhs = { score = 1 }
+local rhs = { score = 2 }
+setmetatable(lhs, {
+	__lt = function(a, b)
+		return a.score < b.score
+	end
+})
+setmetatable(rhs, {})
+return lhs <= rhs
+`)
+	if err == nil {
+		t.Fatal("expected less-equal fallback without shared __lt to fail")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": operator "<=" expects number operand, got table` {
+		t.Fatalf("unexpected less-equal fallback error: %v", err)
+	}
+
+	state = NewState()
+	err = state.ExecString(`
+local lhs = { score = 1 }
+local rhs = { score = 2 }
+setmetatable(lhs, {
+	__lt = function(a, b)
+		return a.score < b.score
+	end
+})
+setmetatable(rhs, {})
+return lhs >= rhs
+`)
+	if err == nil {
+		t.Fatal("expected greater-equal fallback without shared __lt to fail")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": operator ">=" expects number operand, got table` {
+		t.Fatalf("unexpected greater-equal fallback error: %v", err)
+	}
+}
+
+func TestExecStringPrefersSharedLessEqualMetamethodOverLessThanFallback(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local lhs = { score = 1 }
+local rhs = { score = 2 }
+local lt_count = 0
+local le_count = 0
+local meta = {
+	__lt = function(a, b)
+		lt_count = lt_count + 1
+		return a.score < b.score
+	end,
+	__le = function(a, b)
+		le_count = le_count + 1
+		return a.score == 1 and b.score == 2
+	end
+}
+setmetatable(lhs, meta)
+setmetatable(rhs, meta)
+return lhs <= rhs, rhs >= lhs, lt_count, le_count
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected <= result with shared __le: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected >= result with shared __le: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Data != float64(0) || returnValues[3].Data != float64(2) {
+		t.Fatalf("unexpected __lt/__le invocation counts: %#v", returnValues[2:4])
+	}
+}
+
 func TestExecStringEvaluatesProtectedMetatableView(t *testing.T) {
 	state := NewState()
 
@@ -2853,6 +3093,100 @@ setmetatable(target, {})
 	}
 }
 
+func TestExecStringRemovesMetatableWithNil(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+setmetatable(target, { __index = { answer = 42 } })
+local before = getmetatable(target)
+setmetatable(target, nil)
+local after = getmetatable(target)
+return type(before), before.__index.answer, after
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "table" {
+		t.Fatalf("unexpected metatable type before removal: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected metatable content before removal: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected nil metatable after removal, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringValidatesMetatableBuiltinArguments(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`return getmetatable()`)
+	if err == nil {
+		t.Fatal("expected getmetatable arity error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": getmetatable expects 1 argument` {
+		t.Fatalf("unexpected getmetatable arity error: %v", err)
+	}
+
+	state = NewState()
+	if err := state.ExecString(`return getmetatable(1)`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected nil getmetatable result for non-table, got %#v", returnValues[0])
+	}
+
+	state = NewState()
+	err = state.ExecString(`return setmetatable({})`)
+	if err == nil {
+		t.Fatal("expected setmetatable arity error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": setmetatable expects 2 arguments` {
+		t.Fatalf("unexpected setmetatable arity error: %v", err)
+	}
+
+	state = NewState()
+	err = state.ExecString(`
+setmetatable(1, {})
+`)
+	if err == nil {
+		t.Fatal("expected invalid setmetatable first argument error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": setmetatable expects table as first argument` {
+		t.Fatalf("unexpected setmetatable first arg error: %v", err)
+	}
+
+	state = NewState()
+	err = state.ExecString(`
+local target = {}
+setmetatable(target, 1)
+`)
+	if err == nil {
+		t.Fatal("expected invalid setmetatable second argument error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": setmetatable expects table or nil as second argument` {
+		t.Fatalf("unexpected setmetatable arg error: %v", err)
+	}
+}
+
 func TestExecStringEvaluatesRawGetAndRawSet(t *testing.T) {
 	state := NewState()
 
@@ -2882,6 +3216,79 @@ return rawget(target, "answer"), target.answer
 
 	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
 		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringValidatesRawAccessBuiltinArguments(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`return rawget({})`)
+	if err == nil {
+		t.Fatal("expected rawget arity error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": rawget expects 2 arguments` {
+		t.Fatalf("unexpected rawget arity error: %v", err)
+	}
+
+	state = NewState()
+	err = state.ExecString(`return rawget(1, "answer")`)
+	if err == nil {
+		t.Fatal("expected rawget first argument error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": rawget expects table as first argument` {
+		t.Fatalf("unexpected rawget arg error: %v", err)
+	}
+
+	state = NewState()
+	err = state.ExecString(`return rawset({}, "answer")`)
+	if err == nil {
+		t.Fatal("expected rawset arity error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": rawset expects 3 arguments` {
+		t.Fatalf("unexpected rawset arity error: %v", err)
+	}
+
+	state = NewState()
+	err = state.ExecString(`return rawset(1, "answer", 42)`)
+	if err == nil {
+		t.Fatal("expected rawset first argument error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": rawset expects table as first argument` {
+		t.Fatalf("unexpected rawset arg error: %v", err)
+	}
+}
+
+func TestExecStringEvaluatesRawAccessBuiltinReturnValues(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+local returned = rawset(target, "answer", 42)
+local missing = rawget(target, "missing")
+return rawequal(returned, target), rawget(target, "answer"), missing
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected rawset return identity result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected rawget existing-key result: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected nil rawget result for missing key, got %#v", returnValues[2])
 	}
 }
 
@@ -4513,6 +4920,77 @@ return type(iterator), state_value[1], state_value[2], control
 	}
 }
 
+func TestExecStringEvaluatesBuiltinReturnListAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local tbl = { answer = 42 }
+return assert(true, "ok"), next(tbl), pairs(tbl), ipairs({ 10, 20 }), 9
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 5 {
+		t.Fatalf("expected 5 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true ||
+		returnValues[1].Type != ValueTypeString || returnValues[1].Data != "answer" ||
+		returnValues[2].Type != ValueTypeFunction ||
+		returnValues[3].Type != ValueTypeFunction ||
+		returnValues[4].Data != float64(9) {
+		t.Fatalf("unexpected non-final return-list values: %#v", returnValues)
+	}
+
+	state = NewState()
+	if err := state.ExecString(`
+local tbl = { answer = 42 }
+return 0, assert(true, "ok"), next(tbl), pairs(tbl), ipairs({ 10, 20 })
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues = state.LastReturnValues()
+	if len(returnValues) != 7 {
+		t.Fatalf("expected 7 return values, got %d", len(returnValues))
+	}
+
+	ipairsState, ok := returnValues[5].Data.(*table)
+	if returnValues[0].Data != float64(0) ||
+		returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true ||
+		returnValues[2].Type != ValueTypeString || returnValues[2].Data != "answer" ||
+		returnValues[3].Type != ValueTypeFunction ||
+		returnValues[4].Type != ValueTypeFunction ||
+		returnValues[5].Type != ValueTypeTable ||
+		!ok ||
+		mustGetTableNumber(t, ipairsState, 1) != float64(10) ||
+		mustGetTableNumber(t, ipairsState, 2) != float64(20) ||
+		returnValues[6].Data != float64(0) {
+		t.Fatalf("unexpected final return-list values: %#v", returnValues)
+	}
+
+	state = NewState()
+	if err := state.ExecString(`
+local tbl = { answer = 42 }
+return (assert(true, "ok")), (next(tbl)), (pairs(tbl)), (ipairs({ 10, 20 }))
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues = state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true ||
+		returnValues[1].Type != ValueTypeString || returnValues[1].Data != "answer" ||
+		returnValues[2].Type != ValueTypeFunction ||
+		returnValues[3].Type != ValueTypeFunction {
+		t.Fatalf("unexpected parenthesized return-list values: %#v", returnValues)
+	}
+}
+
 func TestExecStringEvaluatesPairsAndIPairsTableConstructorAdjustment(t *testing.T) {
 	state := NewState()
 
@@ -4614,24 +5092,29 @@ return a, b
 	}
 }
 
-func TestExecStringEvaluatesTableLengthOperatorForEmptyAndSparsePrefix(t *testing.T) {
+func TestExecStringEvaluatesTableLengthOperatorMinimalBorderRule(t *testing.T) {
 	state := NewState()
 
 	if err := state.ExecString(`
+local dense = { 10, 20, 30 }
+local sparse_with_prefix = { [1] = "x", [2] = "y", [4] = "z" }
 local empty = {}
 local sparse = { [2] = "x" }
-return #empty, #sparse
+return #dense, #sparse_with_prefix, #empty, #sparse
 `); err != nil {
 		t.Fatalf("exec string: %v", err)
 	}
 
 	returnValues := state.LastReturnValues()
-	if len(returnValues) != 2 {
-		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
 	}
 
-	if returnValues[0].Data != float64(0) || returnValues[1].Data != float64(0) {
-		t.Fatalf("unexpected empty/sparse table lengths: %#v", returnValues)
+	if returnValues[0].Data != float64(3) ||
+		returnValues[1].Data != float64(4) ||
+		returnValues[2].Data != float64(0) ||
+		returnValues[3].Data != float64(0) {
+		t.Fatalf("unexpected table lengths: %#v", returnValues)
 	}
 }
 
@@ -5354,6 +5837,80 @@ return total_pcall, total_xpcall
 
 	if returnValues[1].Data != float64(15) {
 		t.Fatalf("unexpected xpcall generic for total: %#v", returnValues[1])
+	}
+}
+
+// TestExecStringSuppressesNonFinalGenericForIteratorExpansion 验证 generic for 里不是最后一个位置的调用 / vararg / builtin / protected call 不会展开多返回值。
+func TestExecStringSuppressesNonFinalGenericForIteratorExpansion(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function iter()
+	return next, { 1, 2 }, nil
+end
+
+function handler(err)
+	return "handled:" .. err
+end
+
+function capture(...)
+	local total = 0
+	for _, value in ..., { 3, 4 }, nil do
+		total = total + value
+	end
+	return total
+end
+
+local total_call = 0
+for _, value in iter(), { 10, 20 }, nil do
+	total_call = total_call + value
+end
+
+local total_vararg = capture(next)
+
+local total_builtin = 0
+for _, value in assert(next, { 5, 6 }, nil), { 30, 40 }, nil do
+	total_builtin = total_builtin + value
+end
+
+local total_pcall = 0
+for _, value in select(2, pcall(iter)), { 50, 60 }, nil do
+	total_pcall = total_pcall + value
+end
+
+local total_xpcall = 0
+for _, value in select(2, xpcall(iter, handler)), { 70, 80 }, nil do
+	total_xpcall = total_xpcall + value
+end
+
+return total_call, total_vararg, total_builtin, total_pcall, total_xpcall
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 5 {
+		t.Fatalf("expected 5 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(30) {
+		t.Fatalf("unexpected non-final call generic for total: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Data != float64(7) {
+		t.Fatalf("unexpected non-final vararg generic for total: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Data != float64(70) {
+		t.Fatalf("unexpected non-final builtin generic for total: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Data != float64(110) {
+		t.Fatalf("unexpected non-final pcall generic for total: %#v", returnValues[3])
+	}
+
+	if returnValues[4].Data != float64(150) {
+		t.Fatalf("unexpected non-final xpcall generic for total: %#v", returnValues[4])
 	}
 }
 
