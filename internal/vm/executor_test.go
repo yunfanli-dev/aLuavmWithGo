@@ -3076,6 +3076,98 @@ return getmetatable(target)
 	}
 }
 
+func TestExecStringReturnsNilMetatableWhenUnset(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`return getmetatable({})`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected nil metatable for table without metatable, got %#v", returnValues[0])
+	}
+}
+
+func TestExecStringReturnsNilMetatableForGlobalEnvWhenUnset(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`return getmetatable(_G)`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected nil metatable for _G without metatable, got %#v", returnValues[0])
+	}
+}
+
+func TestExecStringReturnsOriginalMetatableWhenUnprotected(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+local meta = { __index = { answer = 42 } }
+setmetatable(target, meta)
+return rawequal(getmetatable(target), meta), getmetatable(target).__index.answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected metatable identity result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected metatable content result: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringReplacesUnprotectedMetatable(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+local first = { __index = { answer = 42 } }
+local second = { __index = { answer = 99 } }
+setmetatable(target, first)
+local returned = setmetatable(target, second)
+return rawequal(returned, target), rawequal(getmetatable(target), second), target.answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected setmetatable replace-return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected replacement metatable identity result: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(99) {
+		t.Fatalf("unexpected replacement metatable content result: %#v", returnValues[2])
+	}
+}
+
 func TestExecStringRejectsProtectedMetatableChange(t *testing.T) {
 	state := NewState()
 
@@ -3086,6 +3178,23 @@ setmetatable(target, {})
 `)
 	if err == nil {
 		t.Fatal("expected protected metatable error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": cannot change a protected metatable` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringRejectsProtectedMetatableRemoval(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local target = {}
+setmetatable(target, { __metatable = "locked" })
+setmetatable(target, nil)
+`)
+	if err == nil {
+		t.Fatal("expected protected metatable removal error")
 	}
 
 	if err.Error() != `execute compiled Lua source "<memory>": cannot change a protected metatable` {
@@ -3122,6 +3231,61 @@ return type(before), before.__index.answer, after
 
 	if returnValues[2].Type != ValueTypeNil {
 		t.Fatalf("expected nil metatable after removal, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringSetMetatableReturnsOriginalTable(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+local meta = { __index = { answer = 42 } }
+local set_result = setmetatable(target, meta)
+local clear_result = setmetatable(target, nil)
+return rawequal(set_result, target), rawequal(clear_result, target), getmetatable(target)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected setmetatable set-return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected setmetatable clear-return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected nil metatable after clear, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringClearsGlobalEnvMetatableWithNil(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local returned = setmetatable(_G, nil)
+return rawequal(returned, _G), getmetatable(_G)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected setmetatable(_G, nil) return identity result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected nil metatable for _G after clear, got %#v", returnValues[1])
 	}
 }
 
@@ -3184,6 +3348,43 @@ setmetatable(target, 1)
 
 	if err.Error() != `execute compiled Lua source "<memory>": setmetatable expects table or nil as second argument` {
 		t.Fatalf("unexpected setmetatable arg error: %v", err)
+	}
+}
+
+func TestExecStringIgnoresExtraMetatableAndRawAccessArguments(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+local meta = { __index = { answer = 42 } }
+local set_result = setmetatable(target, meta, "ignored")
+local get_result = getmetatable(target, "ignored")
+local rawset_result = rawset(target, "answer", 99, "ignored")
+local rawget_result = rawget(target, "answer", "ignored")
+return rawequal(set_result, target), rawequal(get_result, meta), rawequal(rawset_result, target), rawget_result
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected setmetatable extra-arg result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeBoolean || returnValues[1].Data != true {
+		t.Fatalf("unexpected getmetatable extra-arg result: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeBoolean || returnValues[2].Data != true {
+		t.Fatalf("unexpected rawset extra-arg result: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNumber || returnValues[3].Data != float64(99) {
+		t.Fatalf("unexpected rawget extra-arg result: %#v", returnValues[3])
 	}
 }
 
@@ -3289,6 +3490,660 @@ return rawequal(returned, target), rawget(target, "answer"), missing
 
 	if returnValues[2].Type != ValueTypeNil {
 		t.Fatalf("expected nil rawget result for missing key, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringBypassesIndexMetamethodForMissingRawGet(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+setmetatable(target, {
+	__index = function()
+		return "fallback"
+	end
+})
+return rawget(target, "missing"), target.missing
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected nil rawget result for missing key with __index, got %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "fallback" {
+		t.Fatalf("unexpected regular indexing fallback result: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringDeletesKeyWithNilRawSet(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local target = {}
+setmetatable(target, {
+	__index = function()
+		return "fallback"
+	end
+})
+rawset(target, "answer", 42)
+rawset(target, "answer", nil)
+return rawget(target, "answer"), target.answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected nil rawget result after rawset delete, got %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeString || returnValues[1].Data != "fallback" {
+		t.Fatalf("unexpected regular indexing result after rawset delete: %#v", returnValues[1])
+	}
+}
+
+func TestExecStringEvaluatesRawAccessOnGlobalEnv(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local returned = rawset(_G, "answer", 42)
+local existing = rawget(_G, "answer")
+local missing = rawget(_G, "missing")
+return rawequal(returned, _G), answer, existing, missing
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected rawset(_G, ...) return identity result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected bare global value after rawset(_G, ...): %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, existing) result: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("expected nil rawget(_G, missing) result, got %#v", returnValues[3])
+	}
+}
+
+func TestExecStringDeletesGlobalWithNilRawSet(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+rawset(_G, "answer", 42)
+local returned = rawset(_G, "answer", nil)
+return rawequal(returned, _G), answer, rawget(_G, "answer")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected rawset(_G, nil) return identity result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare global value to be nil after rawset(_G, nil), got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, deleted) result to be nil, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringEvaluatesRawAccessOnGlobalEnvWithNonStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local fn_key = function() end
+local returned = rawset(_G, fn_key, 42)
+return rawequal(returned, _G), rawget(_G, fn_key), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeBoolean || returnValues[0].Data != true {
+		t.Fatalf("unexpected rawset(_G, non-string) return identity result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, non-string) result: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected bare global lookup to stay nil for non-string _G key, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringEvaluatesOrdinaryIndexOnGlobalEnvWithNonStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local fn_key = function() end
+rawset(_G, fn_key, 42)
+return _G[fn_key], answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 2 {
+		t.Fatalf("expected 2 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected ordinary _G[non-string] result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare global lookup to stay nil for ordinary non-string _G key, got %#v", returnValues[1])
+	}
+}
+
+func TestExecStringDeletesOrdinaryIndexOnGlobalEnvWithNonStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local fn_key = function() end
+rawset(_G, fn_key, 42)
+rawset(_G, fn_key, nil)
+return _G[fn_key], rawget(_G, fn_key), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected ordinary _G[non-string] result to be nil after delete, got %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, non-string) result to be nil after delete, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected bare global lookup to stay nil after non-string _G delete, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsGlobalEnvTableAssignmentOnNonStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local fn_key = function() end
+_G[fn_key] = 42
+local before = rawget(_G, fn_key)
+_G[fn_key] = nil
+return before, _G[fn_key], rawget(_G, fn_key), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, non-string) result after _G assignment: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected _G[non-string] result to be nil after _G deletion, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, non-string) result to be nil after _G deletion, got %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("expected bare global lookup to stay nil after _G non-string assignment, got %#v", returnValues[3])
+	}
+}
+
+func TestExecStringEvaluatesOrdinaryIndexOnGlobalEnvWithStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+rawset(_G, "answer", 42)
+return _G["answer"], answer, rawget(_G, "answer")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected ordinary _G[string] result: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected bare global result after ordinary _G[string] lookup: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after ordinary _G[string] lookup: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsBareGlobalAssignmentIntoGlobalEnvTable(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+answer = 42
+return _G["answer"], rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected _G[string] result after bare global assignment: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after bare global assignment: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(42) {
+		t.Fatalf("unexpected bare global result after bare global assignment: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsBareGlobalDeletionIntoGlobalEnvTable(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+answer = 42
+answer = nil
+return _G["answer"], rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected _G[string] result to be nil after bare global deletion: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after bare global deletion: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after bare global deletion: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsGlobalEnvTableAssignmentIntoBareGlobals(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+_G["answer"] = 42
+local before = rawget(_G, "answer")
+_G["answer"] = nil
+return before, answer, rawget(_G, "answer"), _G["answer"]
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after _G assignment: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after _G deletion, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after _G deletion, got %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("expected _G[string] result to be nil after _G deletion, got %#v", returnValues[3])
+	}
+}
+
+func TestExecStringReflectsGlobalEnvTableWriteIntoBareGlobals(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+_G["answer"] = 42
+return _G["answer"], rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected _G[string] result after _G write: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after _G write: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(42) {
+		t.Fatalf("unexpected bare global result after _G write: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsGlobalEnvDotWriteIntoBareGlobals(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+_G.answer = 42
+local before = rawget(_G, "answer")
+_G.answer = nil
+return before, answer, rawget(_G, "answer"), _G.answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after _G dot write: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after _G dot delete: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after _G dot delete: %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("expected _G.answer result to be nil after _G dot delete: %#v", returnValues[3])
+	}
+}
+
+func TestExecStringReflectsGlobalEnvDotValueWriteIntoBareGlobals(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+_G.answer = 42
+return _G.answer, rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected _G.answer result after _G dot write: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after _G dot write: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(42) {
+		t.Fatalf("unexpected bare global result after _G dot write: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsRawSetOnGlobalEnvIntoDotIndex(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+rawset(_G, "answer", 42)
+local before = _G.answer
+rawset(_G, "answer", nil)
+return before, _G.answer, answer, rawget(_G, "answer")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected _G.answer result after rawset(_G, string): %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected _G.answer result to be nil after rawset(_G, nil): %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after rawset(_G, nil): %#v", returnValues[2])
+	}
+
+	if returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after rawset(_G, nil): %#v", returnValues[3])
+	}
+}
+
+func TestExecStringReflectsGlobalEnvTableDeletionIntoDotIndex(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+_G["answer"] = 42
+_G["answer"] = nil
+return _G.answer, rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected _G.answer result to be nil after _G[string] deletion: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after _G[string] deletion: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after _G[string] deletion: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringEvaluatesMissingGlobalEnvDotIndex(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+return _G.missing, missing, rawget(_G, "missing")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected _G.missing result to be nil, got %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare missing global result to be nil, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, missing) result to be nil, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsBareGlobalAssignmentIntoGlobalEnvDotIndex(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+answer = 42
+return _G.answer, rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNumber || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected _G.answer result after bare global assignment: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNumber || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected rawget(_G, string) result after bare global assignment: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNumber || returnValues[2].Data != float64(42) {
+		t.Fatalf("unexpected bare global result after bare global assignment: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringReflectsBareGlobalDeletionIntoGlobalEnvDotIndex(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+answer = 42
+answer = nil
+return _G.answer, rawget(_G, "answer"), answer
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected _G.answer result to be nil after bare global deletion: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after bare global deletion: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after bare global deletion: %#v", returnValues[2])
+	}
+}
+
+func TestExecStringEvaluatesOrdinaryMissingIndexOnGlobalEnvWithStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+return _G["missing"], missing, rawget(_G, "missing")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected ordinary _G[missing] result to be nil, got %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare missing global result to be nil, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, missing) result to be nil, got %#v", returnValues[2])
+	}
+}
+
+func TestExecStringDeletesOrdinaryIndexOnGlobalEnvWithStringKey(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+rawset(_G, "answer", 42)
+rawset(_G, "answer", nil)
+return _G["answer"], answer, rawget(_G, "answer")
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeNil {
+		t.Fatalf("expected ordinary _G[string] result to be nil after delete, got %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != ValueTypeNil {
+		t.Fatalf("expected bare global result to be nil after _G[string] delete, got %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != ValueTypeNil {
+		t.Fatalf("expected rawget(_G, string) result to be nil after delete, got %#v", returnValues[2])
 	}
 }
 
@@ -4920,6 +5775,44 @@ return type(iterator), state_value[1], state_value[2], control
 	}
 }
 
+func TestExecStringEvaluatesPairsAndIPairsCallArgumentAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+function pack(a, b, c, d)
+	return a, b, c, d
+end
+local a, b, c, d = pack(pairs({ answer = 42 }))
+local e, f, g, h = pack(0, pairs({ answer = 42 }))
+local i, j, k, l = pack(ipairs({ 10, 20 }))
+local m, n, o, p = pack(0, ipairs({ 10, 20 }))
+return type(a), b.answer, c, d, e, type(f), g.answer, h, type(i), j[1], k, l, m, type(n), o[1], p
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 16 {
+		t.Fatalf("expected 16 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != ValueTypeString || returnValues[0].Data != "function" || returnValues[1].Data != float64(42) || returnValues[2].Type != ValueTypeNil || returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("unexpected direct pairs call-arg values: %#v", returnValues[:4])
+	}
+
+	if returnValues[4].Data != float64(0) || returnValues[5].Type != ValueTypeString || returnValues[5].Data != "function" || returnValues[6].Data != float64(42) || returnValues[7].Type != ValueTypeNil {
+		t.Fatalf("unexpected final pairs call-arg values: %#v", returnValues[4:8])
+	}
+
+	if returnValues[8].Type != ValueTypeString || returnValues[8].Data != "function" || returnValues[9].Data != float64(10) || returnValues[10].Data != float64(0) || returnValues[11].Type != ValueTypeNil {
+		t.Fatalf("unexpected direct ipairs call-arg values: %#v", returnValues[8:12])
+	}
+
+	if returnValues[12].Data != float64(0) || returnValues[13].Type != ValueTypeString || returnValues[13].Data != "function" || returnValues[14].Data != float64(10) || returnValues[15].Data != float64(0) {
+		t.Fatalf("unexpected final ipairs call-arg values: %#v", returnValues[12:16])
+	}
+}
+
 func TestExecStringEvaluatesBuiltinReturnListAdjustment(t *testing.T) {
 	state := NewState()
 
@@ -5411,6 +6304,81 @@ return a, b, c, d, e, f, g, h, i, j, k
 	}
 }
 
+func TestExecStringEvaluatesMethodCallReturnListAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local obj = {}
+function obj:pair()
+	return 1, 2
+end
+	return 0, obj:pair(), (obj:pair())
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(0) || returnValues[1].Data != float64(1) || returnValues[2].Data != float64(1) {
+		t.Fatalf("unexpected method return-list values: %#v", returnValues)
+	}
+}
+
+func TestExecStringExpandsFinalMethodCallInReturnList(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local obj = {}
+function obj:pair()
+	return 1, 2
+end
+return 0, (obj:pair()), obj:pair()
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 4 {
+		t.Fatalf("expected 4 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(0) || returnValues[1].Data != float64(1) || returnValues[2].Data != float64(1) || returnValues[3].Data != float64(2) {
+		t.Fatalf("unexpected final method return-list values: %#v", returnValues)
+	}
+}
+
+func TestExecStringEvaluatesMethodCallTableConstructorAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local obj = {}
+function obj:pair()
+	return 2, 3
+end
+local a = { 0, obj:pair() }
+local b = { 0, (obj:pair()) }
+return a[1], a[2], a[3], a[4], b[1], b[2], b[3]
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 7 {
+		t.Fatalf("expected 7 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(0) || returnValues[1].Data != float64(2) || returnValues[2].Data != float64(3) || returnValues[3].Type != ValueTypeNil {
+		t.Fatalf("unexpected method table values: %#v", returnValues[:4])
+	}
+
+	if returnValues[4].Data != float64(0) || returnValues[5].Data != float64(2) || returnValues[6].Type != ValueTypeNil {
+		t.Fatalf("unexpected parenthesized method table values: %#v", returnValues[4:7])
+	}
+}
+
 func TestExecStringEvaluatesPCallMultivalueAdjustment(t *testing.T) {
 	state := NewState()
 
@@ -5701,6 +6669,43 @@ return capture(7, 8)
 	}
 }
 
+func TestExecStringEvaluatesMethodCallNestedExpressionListMultivalueAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local obj = {}
+function obj:pair()
+	return 1, 2
+end
+function capture(...)
+	local a, b, c = ..., obj:pair()
+	local d, e, f = ..., (obj:pair())
+	local t = { ..., obj:pair(), (obj:pair()) }
+	return a, b, c, d, e, f, t[1], t[2], t[3], t[4], t[5]
+end
+return capture(7, 8)
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 11 {
+		t.Fatalf("expected 11 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(7) || returnValues[1].Data != float64(1) || returnValues[2].Data != float64(2) {
+		t.Fatalf("unexpected first nested method values: %#v", returnValues[:3])
+	}
+
+	if returnValues[3].Data != float64(7) || returnValues[4].Data != float64(1) || returnValues[5].Type != ValueTypeNil {
+		t.Fatalf("unexpected second nested method values: %#v", returnValues[3:6])
+	}
+
+	if returnValues[6].Data != float64(7) || returnValues[7].Data != float64(1) || returnValues[8].Data != float64(1) || returnValues[9].Type != ValueTypeNil || returnValues[10].Type != ValueTypeNil {
+		t.Fatalf("unexpected nested method table values: %#v", returnValues[6:11])
+	}
+}
+
 func TestExecStringEvaluatesGenericForIteratorMultivalueAdjustment(t *testing.T) {
 	state := NewState()
 
@@ -5724,6 +6729,82 @@ return total
 
 	if returnValues[0].Data != float64(30) {
 		t.Fatalf("unexpected generic for total: %#v", returnValues[0])
+	}
+}
+
+// TestExecStringEvaluatesMethodCallGenericForIteratorExpressionAdjustment 验证方法调用作为 generic for 最后迭代表达式时也会按 Lua 规则展开成迭代器三元组。
+func TestExecStringEvaluatesMethodCallGenericForIteratorExpressionAdjustment(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local factory = {}
+function factory:iter()
+	return next, { 3, 4 }, nil
+end
+local total = 0
+for _, value in factory:iter() do
+	total = total + value
+end
+return total
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(7) {
+		t.Fatalf("unexpected method-call generic for total: %#v", returnValues[0])
+	}
+}
+
+// TestExecStringSuppressesParenthesizedMethodCallGenericForIteratorAdjustment 验证带圆括号的方法调用在 generic for 迭代表达式位置会被压成单值。
+func TestExecStringSuppressesParenthesizedMethodCallGenericForIteratorAdjustment(t *testing.T) {
+	state := NewState()
+
+	err := state.ExecString(`
+local factory = {}
+function factory:iter()
+	return next, { 3, 4 }, nil
+end
+for _, value in (factory:iter()) do
+end
+`)
+	if err == nil {
+		t.Fatal("expected parenthesized method-call generic for error")
+	}
+
+	if err.Error() != `execute compiled Lua source "<memory>": next expects table argument` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecStringSuppressesNonFinalMethodCallGenericForIteratorExpansion(t *testing.T) {
+	state := NewState()
+
+	if err := state.ExecString(`
+local factory = {}
+function factory:iter()
+	return next, { 3, 4 }, nil
+end
+local total = 0
+for _, value in factory:iter(), { 10, 20 }, nil do
+	total = total + value
+end
+return total
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := state.LastReturnValues()
+	if len(returnValues) != 1 {
+		t.Fatalf("expected 1 return value, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Data != float64(30) {
+		t.Fatalf("unexpected non-final method-call generic for total: %#v", returnValues[0])
 	}
 }
 
