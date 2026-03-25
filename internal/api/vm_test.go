@@ -131,6 +131,54 @@ func TestRegisterPreloadFunctionExposesHostModule(t *testing.T) {
 	}
 }
 
+func TestRegisterPreloadFunctionSupportsRequireFromCurrentFunctionEnvironment(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterPreloadFunction("hostenv", func(args []Value) ([]Value, error) {
+		if len(args) != 1 || args[0].Type != "string" || args[0].Data != "hostenv" {
+			t.Fatalf("unexpected preload args: %#v", args)
+		}
+
+		return []Value{{Type: "number", Data: float64(42)}}, nil
+	})
+	if err != nil {
+		t.Fatalf("register preload function: %v", err)
+	}
+
+	if err := vm.ExecString(`
+local env = { answer = 41 }
+setmetatable(env, { __index = _G })
+
+local function load_host()
+	setfenv(load_host, env)
+	local mod = require("hostenv")
+	env.loaded_by_host = answer + 1
+	return mod, env.loaded_by_host, rawget(_G, "loaded_by_host")
+end
+
+return load_host()
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != "number" || returnValues[0].Data != float64(42) {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != "number" || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != "nil" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
+	}
+}
+
 func TestRegisterLoadedModuleExposesCachedHostValue(t *testing.T) {
 	vm := NewVM()
 
@@ -146,6 +194,48 @@ func TestRegisterLoadedModuleExposesCachedHostValue(t *testing.T) {
 	returnValues := vm.state.LastReturnValues()
 	if len(returnValues) != 1 || returnValues[0].Type != "string" || returnValues[0].Data != "ready" {
 		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
+func TestRegisterLoadedModuleSupportsRequireFromCurrentFunctionEnvironment(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterLoadedModule("cached_env", Value{Type: "string", Data: "ready"})
+	if err != nil {
+		t.Fatalf("register loaded module: %v", err)
+	}
+
+	if err := vm.ExecString(`
+local env = { answer = 41 }
+setmetatable(env, { __index = _G })
+
+local function load_cached()
+	setfenv(load_cached, env)
+	local mod = require("cached_env")
+	env.loaded_by_cached = answer + 1
+	return mod, env.loaded_by_cached, rawget(_G, "loaded_by_cached")
+end
+
+return load_cached()
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != "string" || returnValues[0].Data != "ready" {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != "number" || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != "nil" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
 	}
 }
 
@@ -172,6 +262,56 @@ func TestRegisterSearcherFunctionExposesHostSearcher(t *testing.T) {
 	returnValues := vm.state.LastReturnValues()
 	if len(returnValues) != 1 || returnValues[0].Type != "string" || returnValues[0].Data != "host:virtual" {
 		t.Fatalf("unexpected return values: %#v", returnValues)
+	}
+}
+
+func TestRegisterSearcherFunctionRespectsCurrentFunctionEnvironment(t *testing.T) {
+	vm := NewVM()
+
+	err := vm.RegisterSearcherFunction(func(moduleName string) (ModuleLoader, string, error) {
+		if moduleName != "virtual_env" {
+			return nil, "\n\tno host searcher match", nil
+		}
+
+		return func(moduleName string) ([]Value, error) {
+			return []Value{{Type: "string", Data: "host:" + moduleName}}, nil
+		}, "", nil
+	})
+	if err != nil {
+		t.Fatalf("register searcher function: %v", err)
+	}
+
+	if err := vm.ExecString(`
+local env = { answer = 41 }
+setmetatable(env, { __index = _G })
+
+local function load_virtual()
+	setfenv(load_virtual, env)
+	local mod = require("virtual_env")
+	env.loaded_by_host = answer + 1
+	return mod, env.loaded_by_host, rawget(_G, "loaded_by_host")
+end
+
+return load_virtual()
+`); err != nil {
+		t.Fatalf("exec string: %v", err)
+	}
+
+	returnValues := vm.state.LastReturnValues()
+	if len(returnValues) != 3 {
+		t.Fatalf("expected 3 return values, got %d", len(returnValues))
+	}
+
+	if returnValues[0].Type != "string" || returnValues[0].Data != "host:virtual_env" {
+		t.Fatalf("unexpected first return value: %#v", returnValues[0])
+	}
+
+	if returnValues[1].Type != "number" || returnValues[1].Data != float64(42) {
+		t.Fatalf("unexpected second return value: %#v", returnValues[1])
+	}
+
+	if returnValues[2].Type != "nil" {
+		t.Fatalf("unexpected third return value: %#v", returnValues[2])
 	}
 }
 

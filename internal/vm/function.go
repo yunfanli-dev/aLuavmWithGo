@@ -29,6 +29,9 @@ type userFunction struct {
 	// captured 保存闭包捕获到的外层变量槽位。
 	// 这里存的是 valueCell 指针，以便函数内外能共享同一份可变状态。
 	captured map[string]*valueCell
+	// env 保存该函数当前绑定的最小环境表。
+	// 未命中的全局名读写会回落到这里，而不是直接固定写死到 `_G`。
+	env *table
 }
 
 type nativeFunction struct {
@@ -41,4 +44,7 @@ type nativeFunction struct {
 	// contextualImpl 是需要访问执行器上下文的宿主实现入口。
 	// 这类函数可以调用 Lua 函数、读取元方法或复用当前执行器的辅助能力。
 	contextualImpl contextualNativeFunction
+	// env 保存该宿主函数当前绑定的最小环境表。
+	// 当前主要用于 `getfenv` / `setfenv` 维持最小可观察兼容性。
+	env *table
 }

@@ -81,13 +81,19 @@ func (s *State) ExecSource(source Source) error {
 // ExecSourceWithContext 在给定上下文控制下执行一份源码载荷。
 // 它会先完成前端编译，再驱动执行器运行生成的 IR。
 func (s *State) ExecSourceWithContext(ctx context.Context, source Source) error {
-	_, err := s.executeSourceWithContext(ctx, source, true)
+	_, err := s.executeSourceWithEnv(ctx, source, true, s.globalEnv)
 	return err
 }
 
 // executeSourceWithContext 在给定上下文控制下执行一份源码载荷，并按需更新对外可见的最近执行结果。
 // `require` 等内部链路会复用它执行子模块，但不会覆盖宿主视角的 `LastProgram` / `LastReturnValues`。
 func (s *State) executeSourceWithContext(ctx context.Context, source Source, recordLast bool) ([]Value, error) {
+	return s.executeSourceWithEnv(ctx, source, recordLast, s.globalEnv)
+}
+
+// executeSourceWithEnv 在给定上下文控制下执行一份源码载荷，并允许调用方指定线程环境表。
+// `require` 等内部链路会用它把调用者线程环境继续传给子模块。
+func (s *State) executeSourceWithEnv(ctx context.Context, source Source, recordLast bool, rootEnv *table) ([]Value, error) {
 	trimmed := strings.TrimSpace(source.Content)
 	if trimmed == "" {
 		return nil, nil
@@ -122,7 +128,7 @@ func (s *State) executeSourceWithContext(ctx context.Context, source Source, rec
 	s.pushSourceName(sourceName)
 	defer s.popSourceName()
 
-	result, err := executeProgram(ctx, s, frontendResult.Program)
+	result, err := executeProgramWithEnv(ctx, s, frontendResult.Program, rootEnv)
 	if err != nil {
 		return nil, fmt.Errorf("execute compiled Lua source %q: %w", sourceName, err)
 	}
@@ -198,9 +204,12 @@ func (s *State) currentSourceName() string {
 
 // requireModule 按当前最小模块加载规则解析、执行并缓存一个 Lua 模块。
 // 当前会优先相对正在执行的源码目录查找，再回退到工作目录，并支持 `.lua` 后缀补全。
-func (s *State) requireModule(ctx context.Context, moduleName string) (Value, error) {
+func (s *State) requireModule(ctx context.Context, rootEnv *table, moduleName string) (Value, error) {
 	if strings.TrimSpace(moduleName) == "" {
 		return NilValue(), fmt.Errorf("require expects non-empty module name")
+	}
+	if rootEnv == nil {
+		rootEnv = s.globalEnv
 	}
 
 	loadedModules, err := s.ensurePackageLoadedTable()
@@ -221,7 +230,7 @@ func (s *State) requireModule(ctx context.Context, moduleName string) (Value, er
 		return NilValue(), err
 	}
 
-	exec := newExecutor(ctx, s)
+	exec := newExecutorWithEnv(ctx, s, rootEnv)
 	searchErrors := make([]string, 0, 2)
 	for index := 1; ; index++ {
 		searcher, exists, err := loaders.get(Value{Type: ValueTypeNumber, Data: float64(index)})
@@ -271,16 +280,19 @@ func (s *State) requireModule(ctx context.Context, moduleName string) (Value, er
 
 // requirePreloadModule 通过最小 `package.preload` loader 执行一份内存模块。
 // 当前会把模块名作为唯一参数传给 loader，并复用 `package.loaded` 记录缓存结果。
-func (s *State) requirePreloadModule(ctx context.Context, moduleName string, loader Value, loadedModules *table) (Value, error) {
+func (s *State) requirePreloadModule(ctx context.Context, rootEnv *table, moduleName string, loader Value, loadedModules *table) (Value, error) {
 	loadingKey := "preload:" + moduleName
 	if _, loading := s.loadingModules[loadingKey]; loading {
 		return NilValue(), fmt.Errorf("loop in require chain for module %q", moduleName)
+	}
+	if rootEnv == nil {
+		rootEnv = s.globalEnv
 	}
 
 	s.loadingModules[loadingKey] = struct{}{}
 	defer delete(s.loadingModules, loadingKey)
 
-	exec := newExecutor(ctx, s)
+	exec := newExecutorWithEnv(ctx, s, rootEnv)
 	returnValues, err := exec.callFunctionValue(loader, []Value{{Type: ValueTypeString, Data: moduleName}})
 	if err != nil {
 		return NilValue(), err
@@ -382,12 +394,15 @@ func (s *State) isGlobalEnv(tableValue *table) bool {
 	return s != nil && s.globalEnv != nil && tableValue == s.globalEnv
 }
 
-// ensureModuleTable 创建或复用一份模块表，并把它同步到全局路径和 `package.loaded`。
-// 当前只负责最小模块表注册，不处理旧 Lua 5.1 的环境切换语义。
-func (s *State) ensureModuleTable(moduleName string) (*table, error) {
+// ensureModuleTable 创建或复用一份模块表，并把它同步到给定可见环境路径和 `package.loaded`。
+// 当前只负责最小模块表注册，不处理旧 Lua 5.1 的完整环境切换语义。
+func (s *State) ensureModuleTable(rootEnv *table, moduleName string) (*table, error) {
 	moduleName = strings.TrimSpace(moduleName)
 	if moduleName == "" {
 		return nil, fmt.Errorf("module expects non-empty name")
+	}
+	if rootEnv == nil {
+		rootEnv = s.globalEnv
 	}
 
 	loadedTable, err := s.ensurePackageLoadedTable()
@@ -416,7 +431,7 @@ func (s *State) ensureModuleTable(moduleName string) (*table, error) {
 		moduleTable = newTable()
 	}
 
-	if err := s.bindModulePath(moduleName, moduleTable); err != nil {
+	if err := s.bindModulePath(rootEnv, moduleName, moduleTable); err != nil {
 		return nil, err
 	}
 
@@ -430,15 +445,15 @@ func (s *State) ensureModuleTable(moduleName string) (*table, error) {
 	return moduleTable, nil
 }
 
-// bindModulePath 把模块表挂到点分全局路径上。
-// 例如 `foo.bar` 会确保 `_G.foo.bar` 指向同一份模块表，并在缺失时补中间 table。
-func (s *State) bindModulePath(moduleName string, moduleTable *table) error {
+// bindModulePath 把模块表挂到给定可见环境的点分路径上。
+// 例如 `foo.bar` 会确保 `root.foo.bar` 指向同一份模块表，并在缺失时补中间 table。
+func (s *State) bindModulePath(rootEnv *table, moduleName string, moduleTable *table) error {
 	parts := strings.Split(moduleName, ".")
 	if len(parts) == 0 {
 		return fmt.Errorf("module expects non-empty name")
 	}
 
-	currentTable := s.globalEnv
+	currentTable := rootEnv
 	for index, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -742,7 +757,12 @@ func (s *State) packagePreloadSearcher(exec *executor, args []Value) ([]Value, e
 		wrappedLoader := &nativeFunction{
 			name: "package.loader.preload(" + moduleName + ")",
 			contextualImpl: func(exec *executor, args []Value) ([]Value, error) {
-				moduleValue, err := s.requirePreloadModule(exec.ctx, moduleName, loader, loadedModules)
+				moduleRootEnv := exec.threadEnv()
+				if callerEnv, err := exec.envByLevel(2); err == nil && callerEnv != nil {
+					moduleRootEnv = callerEnv
+				}
+
+				moduleValue, err := s.requirePreloadModule(exec.ctx, moduleRootEnv, moduleName, loader, loadedModules)
 				if err != nil {
 					return nil, err
 				}
@@ -792,10 +812,15 @@ func (s *State) packageFileSearcher(exec *executor, args []Value) ([]Value, erro
 			s.loadingModules[modulePath] = struct{}{}
 			defer delete(s.loadingModules, modulePath)
 
-			return s.executeSourceWithContext(exec.ctx, Source{
+			moduleRootEnv := exec.threadEnv()
+			if callerEnv, err := exec.envByLevel(2); err == nil && callerEnv != nil {
+				moduleRootEnv = callerEnv
+			}
+
+			return s.executeSourceWithEnv(exec.ctx, Source{
 				Name:    modulePath,
 				Content: string(content),
-			}, false)
+			}, false, moduleRootEnv)
 		},
 	}
 

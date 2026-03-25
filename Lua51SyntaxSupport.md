@@ -91,7 +91,7 @@
 - `#` 和 `table.getn` 当前已支持字符串长度，以及“存在索引 `1` 时按当前表中的最大正整数整数 key 取边界长度”的最小 table 长度语义；`table.maxn` 当前返回表中的最大数值 key；这些能力仍不代表 Lua 5.1 完整 table 长度语义
 - table / function 当前已按对象身份参与 table key 匹配，因此 `t[other_table]`、`t[fn]`、`rawget` / `rawset` 不会再因相同调试文本而意外撞 key；但更完整的 Lua 5.1 table 行为仍未全部收平
 - `string.find` / `string.match` / `string.gfind` / `string.gmatch` / `string.gsub` / `string.format` 当前都只覆盖最小可用子集；其中 `find` / `match` / `gfind` / `gmatch` 支持 Lua 风格起始下标下的纯文本匹配，`gsub` 支持纯文本匹配下的字符串 / table / function 替换器与可选替换次数，`format` 支持 `%c` / `%o` / `%u` / `%x` / `%X` / `%e` / `%E` / `%g` / `%G` 在内的少量高频格式符，不支持 Lua 5.1 完整 pattern / capture / replacer / format 语义
-- `require` / `package` / `module(...)` 当前已支持最小文件模块加载、`package.loaded` 缓存、`package.preload` 内存 loader、`package.path` 搜索模板、`package.loaders` 顺序搜索、最小 `package.searchpath`、`package.seeall`、最小 `module(...)` 表注册和循环检测，会按 loader 顺序解析模块，并优先相对当前源码目录解析相对模板；其中 `package.loaded[name] = false` 当前不会被视为“已加载命中”，而会继续重新加载；`module(...)` 当前不会切换 chunk 环境；完整 `package` / 搜索器 / `package.loaded` / 环境切换全量兼容语义仍未实现
+- `require` / `package` / `module(...)` 当前已支持最小文件模块加载、`package.loaded` 缓存、`package.preload` 内存 loader、`package.path` 搜索模板、`package.loaders` 顺序搜索、最小 `package.searchpath`、`package.seeall`、最小 `module(...)` 表注册和循环检测，会按 loader 顺序解析模块，并优先相对当前源码目录解析相对模板；其中 `package.loaded[name] = false` 当前不会被视为“已加载命中”，而会继续重新加载；`module(...)` 当前会把调用它的 Lua 帧切到模块环境，并把点分模块路径挂到调用点当前可见环境上；`package.seeall` 和 `require` 执行链也会继续沿用调用点当前可见环境，且后置 `package.seeall(_M)` 不会再错误地回退到模块表自身；当前 `seeall` 的内部基环境记录也已隐藏，不再污染 Lua 可见 metatable 字段；但仍不覆盖完整 Lua 5.1 环境切换全量语义
 - `__index` / `__newindex` 当前已支持 table / function 两种最小回退形态，并会拒绝明显的链式自引用或环；但更完整的 Lua 5.1 元方法链式语义仍未全部收平
 - `__call` 当前已支持最小 table callable 语义，并会拒绝明显的链式自引用或环；但更完整的 Lua 5.1 callable / 元方法兼容性仍未全部收平
 - `__eq` 当前要求两侧 table 共享同一个元方法值才会触发，这和 Lua 5.1 的基础规则一致；但更完整的元方法兼容性仍未全部收平
@@ -101,8 +101,8 @@
 - `..` 当前已把原生快速路径收口到“双方都必须是字符串或数字”，否则会继续尝试 `__concat` 或直接报错；但更完整的 Lua 5.1 拼接兼容性仍未全部收平
 - 同类型字符串当前已支持直接参与 `<` / `<=` / `>` / `>=` 的字典序比较；更完整的跨类型比较兼容性仍未实现
 - `...` 当前已支持函数参数与表达式展开，并会拒绝非法作用域中的使用，但仍未覆盖 Lua 5.1 全部边界行为
-- 未声明名称的普通赋值当前会回落到全局环境，并且最小 `_G` 已会和普通全局名保持同步，因此 `name`、`_G.name` 和 `rawget/rawset(_G, ...)` 这几条基础访问路径可以互通；但完整环境切换 / `setfenv` 语义仍未实现
-- 虽然 generic `for` 语法已支持，但当前主要围绕 `next` / `pairs` / `ipairs` 这一最小链路使用
+- 未声明名称的普通赋值当前会回落到当前函数绑定的最小环境表；默认环境仍是 `_G`，因此 `name`、`_G.name` 和 `rawget/rawset(_G, ...)` 这几条基础访问路径可以互通；同时当前已支持最小 `getfenv` / `setfenv`，可改写函数值、当前活跃调用栈环境以及 `getfenv(0)` / `setfenv(0, ...)` 线程级环境；栈级 `setfenv(level, env)` 现在会同步改回对应函数对象本身，`setfenv(fn, env)` 命中当前正在执行的函数时也会立即刷新活跃调用帧，未显式绑环境的 native 函数当前也会按调用者线程环境返回 `getfenv(fn)`；但完整 Lua 5.1 调试栈级别环境切换语义仍未实现
+- 虽然 generic `for` 语法已支持，且最后一个迭代表达式已覆盖普通调用、`...`、builtin 与 protected call 的最小多返回值调整，但整体仍主要围绕 `next` / `pairs` / `ipairs` 这一最小链路使用
 
 ## 维护规则
 

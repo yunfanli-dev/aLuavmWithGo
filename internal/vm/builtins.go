@@ -14,6 +14,8 @@ func (s *State) registerBuiltins() {
 	s.registerBuiltinType()
 	s.registerBuiltinToString()
 	s.registerBuiltinToNumber()
+	s.registerBuiltinGetFEnv()
+	s.registerBuiltinSetFEnv()
 	s.registerBuiltinPackageLibrary()
 	s.registerBuiltinModule()
 	s.registerBuiltinRequire()
@@ -78,7 +80,7 @@ func (s *State) registerBuiltinPackageLibrary() {
 	})
 	_ = library.set(Value{Type: ValueTypeString, Data: "seeall"}, Value{
 		Type: ValueTypeFunction,
-		Data: &nativeFunction{name: "package.seeall", fn: s.packageSeeAll},
+		Data: &nativeFunction{name: "package.seeall", contextualImpl: s.packageSeeAll},
 	})
 }
 
@@ -132,8 +134,9 @@ func (s *State) packageSearchPath(args []Value) ([]Value, error) {
 }
 
 // packageSeeAll 实现最小 `package.seeall`。
-// 当前会把模块表的 metatable `__index` 指向 `_G`，让模块表能回退访问全局环境。
-func (s *State) packageSeeAll(args []Value) ([]Value, error) {
+// 当前会把模块表的 metatable `__index` 指向调用者当前执行帧环境，
+// 让模块表能回退访问当前调用点可见的全局环境，而不是固定跳回根 `_G`。
+func (s *State) packageSeeAll(exec *executor, args []Value) ([]Value, error) {
 	if len(args) < 1 {
 		return nil, fmt.Errorf("package.seeall expects 1 argument")
 	}
@@ -143,15 +146,28 @@ func (s *State) packageSeeAll(args []Value) ([]Value, error) {
 		return nil, err
 	}
 
+	baseEnv := s.globalEnv
+	if exec != nil {
+		if callerEnv, err := exec.envByLevel(2); err == nil && callerEnv != nil {
+			baseEnv = callerEnv
+		} else if exec.threadEnv() != nil {
+			baseEnv = exec.threadEnv()
+		}
+	}
+
 	metatable := moduleTable.getMetatable()
 	if metatable == nil {
 		metatable = newTable()
 		moduleTable.setMetatable(metatable)
 	}
 
+	if metatable.seeAllBase != nil {
+		baseEnv = metatable.seeAllBase
+	}
+
 	if err := metatable.set(Value{Type: ValueTypeString, Data: "__index"}, Value{
 		Type: ValueTypeTable,
-		Data: s.globalEnv,
+		Data: baseEnv,
 	}); err != nil {
 		return nil, err
 	}
@@ -160,8 +176,8 @@ func (s *State) packageSeeAll(args []Value) ([]Value, error) {
 }
 
 // registerBuiltinModule 注册最小 `module(...)` 兼容 helper。
-// 当前只负责创建/复用模块表、同步 `package.loaded` 和全局路径，并执行可选 setup callback；
-// 它不会像 Lua 5.1 老实现那样切换当前 chunk 的全局环境。
+// 当前会创建/复用模块表、同步 `package.loaded` 和全局路径，执行可选 setup callback，
+// 并把当前执行帧的环境切到该模块表，方便同一 chunk 后续语句继续写入模块环境。
 func (s *State) registerBuiltinModule() {
 	_ = s.registerContextualFunction("module", func(exec *executor, args []Value) ([]Value, error) {
 		if len(args) < 1 {
@@ -173,7 +189,12 @@ func (s *State) registerBuiltinModule() {
 			return nil, err
 		}
 
-		moduleTable, err := s.ensureModuleTable(moduleName)
+		moduleRootEnv := exec.threadEnv()
+		if callerEnv, err := exec.envByLevel(2); err == nil && callerEnv != nil {
+			moduleRootEnv = callerEnv
+		}
+
+		moduleTable, err := s.ensureModuleTable(moduleRootEnv, moduleName)
 		if err != nil {
 			return nil, err
 		}
@@ -195,10 +216,25 @@ func (s *State) registerBuiltinModule() {
 			return nil, err
 		}
 
+		metatable := moduleTable.getMetatable()
+		if metatable == nil {
+			metatable = newTable()
+			moduleTable.setMetatable(metatable)
+		}
+		if callerEnv, err := exec.envByLevel(2); err == nil && callerEnv != nil {
+			metatable.seeAllBase = callerEnv
+		} else {
+			metatable.seeAllBase = exec.threadEnv()
+		}
+
 		for _, option := range args[1:] {
 			if _, err := exec.callFunctionValue(option, []Value{moduleValue}); err != nil {
 				return nil, err
 			}
+		}
+
+		if err := exec.setEnvByLevel(2, moduleTable); err != nil {
+			return nil, err
 		}
 
 		return []Value{moduleValue}, nil
@@ -217,7 +253,12 @@ func (s *State) registerBuiltinRequire() {
 			return nil, fmt.Errorf("require expects string module name")
 		}
 
-		moduleValue, err := s.requireModule(exec.ctx, args[0].Data.(string))
+		moduleRootEnv := exec.threadEnv()
+		if callerEnv, err := exec.envByLevel(2); err == nil && callerEnv != nil {
+			moduleRootEnv = callerEnv
+		}
+
+		moduleValue, err := s.requireModule(exec.ctx, moduleRootEnv, args[0].Data.(string))
 		if err != nil {
 			return nil, err
 		}
@@ -276,6 +317,85 @@ func (s *State) registerBuiltinToNumber() {
 		default:
 			return []Value{NilValue()}, nil
 		}
+	})
+}
+
+// registerBuiltinGetFEnv 注册最小 `getfenv`。
+// 当前支持读取当前活跃调用栈上的环境，以及函数值绑定的环境表。
+func (s *State) registerBuiltinGetFEnv() {
+	_ = s.registerContextualFunction("getfenv", func(exec *executor, args []Value) ([]Value, error) {
+		if len(args) == 0 {
+			env, err := exec.envByLevel(2)
+			if err != nil {
+				return nil, err
+			}
+
+			return []Value{{Type: ValueTypeTable, Data: env}}, nil
+		}
+
+		if args[0].Type == ValueTypeNumber {
+			level, err := builtinInteger(args[0], "getfenv")
+			if err != nil {
+				return nil, err
+			}
+
+			if level == 0 {
+				return []Value{{Type: ValueTypeTable, Data: exec.threadEnv()}}, nil
+			}
+
+			env, err := exec.envByLevel(level + 1)
+			if err != nil {
+				return nil, err
+			}
+
+			return []Value{{Type: ValueTypeTable, Data: env}}, nil
+		}
+
+		env, err := functionEnvironment(args[0], exec.threadEnv())
+		if err != nil {
+			return nil, err
+		}
+
+		return []Value{{Type: ValueTypeTable, Data: env}}, nil
+	})
+}
+
+// registerBuiltinSetFEnv 注册最小 `setfenv`。
+// 当前支持设置函数值绑定的环境表，以及按最小调用栈 level 改写活跃执行环境。
+func (s *State) registerBuiltinSetFEnv() {
+	_ = s.registerContextualFunction("setfenv", func(exec *executor, args []Value) ([]Value, error) {
+		if len(args) < 2 {
+			return nil, fmt.Errorf("setfenv expects 2 arguments")
+		}
+
+		envTable, err := requireBuiltinTable(args[1], "setfenv")
+		if err != nil {
+			return nil, err
+		}
+
+		if args[0].Type == ValueTypeNumber {
+			level, err := builtinInteger(args[0], "setfenv")
+			if err != nil {
+				return nil, err
+			}
+
+			if level == 0 {
+				exec.setThreadEnv(envTable)
+				return []Value{args[1]}, nil
+			}
+
+			if err := exec.setEnvByLevel(level+1, envTable); err != nil {
+				return nil, err
+			}
+
+			return []Value{args[1]}, nil
+		}
+
+		if err := exec.setFunctionValueEnv(args[0], envTable); err != nil {
+			return nil, err
+		}
+
+		return []Value{args[0]}, nil
 	})
 }
 
@@ -2340,6 +2460,52 @@ func requireBuiltinTable(value Value, name string) (*table, error) {
 	}
 
 	return tableValue, nil
+}
+
+// functionEnvironment 读取一个函数值当前绑定的最小环境表。
+// 对未显式绑定环境的函数，会回落到调用方传入的默认环境。
+func functionEnvironment(value Value, fallback *table) (*table, error) {
+	if value.Type != ValueTypeFunction {
+		return nil, fmt.Errorf("expected function, got %s", value.Type)
+	}
+
+	switch functionValue := value.Data.(type) {
+	case *userFunction:
+		if functionValue.env != nil {
+			return functionValue.env, nil
+		}
+	case *nativeFunction:
+		if functionValue.env != nil {
+			return functionValue.env, nil
+		}
+	default:
+		return nil, fmt.Errorf("invalid function payload %T", value.Data)
+	}
+
+	if fallback != nil {
+		return fallback, nil
+	}
+
+	return nil, fmt.Errorf("function environment is unavailable")
+}
+
+// setFunctionEnvironment 改写一个函数值绑定的最小环境表。
+// 当前只覆盖函数值本身，不提供完整 Lua 5.1 调试栈级别的环境切换能力。
+func setFunctionEnvironment(value Value, env *table) error {
+	if value.Type != ValueTypeFunction {
+		return fmt.Errorf("setfenv expects function or level as first argument")
+	}
+
+	switch functionValue := value.Data.(type) {
+	case *userFunction:
+		functionValue.env = env
+		return nil
+	case *nativeFunction:
+		functionValue.env = env
+		return nil
+	default:
+		return fmt.Errorf("invalid function payload %T", value.Data)
+	}
 }
 
 // registerBuiltinError 注册最小 `error` 内建函数。

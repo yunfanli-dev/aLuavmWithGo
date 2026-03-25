@@ -3,10 +3,13 @@ package vm
 import "fmt"
 
 type table struct {
-	entries   map[string]Value
-	keys      map[string]Value
-	order     []string
-	metatable *table
+	entries map[string]Value
+	keys    map[string]Value
+	order   []string
+	// seeAllBase 保存 `package.seeall` 需要回退到的原线程环境。
+	// 这是运行时内部状态，不会暴露成 Lua 可见字段，避免污染 metatable。
+	seeAllBase *table
+	metatable  *table
 }
 
 // newTable 创建当前 Lua table 子集使用的底层存储结构。

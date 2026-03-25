@@ -19,10 +19,28 @@ type executionResult struct {
 	breakLoop bool
 }
 
+type envFrame struct {
+	// env 保存当前活跃调用帧绑定的环境表。
+	// 未命中的全局名读写会回落到这里。
+	env *table
+	// userFunction 指向当前调用帧对应的 Lua 函数对象。
+	// 这样 `setfenv(level, env)` 改帧环境时，也能同步改回函数对象本身。
+	userFunction *userFunction
+	// nativeFunction 指向当前调用帧对应的 native 函数对象。
+	// 这让 `setfenv(fn, env)` 和栈级 `setfenv(level, env)` 的观察结果保持一致。
+	nativeFunction *nativeFunction
+}
+
 type executor struct {
 	// state 指向当前执行绑定的运行时状态。
 	// 它主要用于 `_G` 全局环境桥接和少量跨 helper 的运行时协作。
 	state *State
+	// envFrames 按调用栈顺序记录当前活跃执行帧。
+	// 最后一个元素总是当前执行帧；`getfenv` / `setfenv` 会依赖这条栈做最小 level 解析。
+	envFrames []envFrame
+	// env 保存当前执行帧绑定的最小环境表。
+	// 未命中的全局名读写会回落到这里，以便支持最小 `getfenv` / `setfenv`。
+	env *table
 	// scopes 维护当前执行栈可见的局部作用域链。
 	// 最后一个元素总是当前最内层作用域，变量查找和赋值都依赖这条链路。
 	scopes []map[string]*valueCell
@@ -43,6 +61,12 @@ type executor struct {
 // executeProgram 执行当前 IR 子集程序，并返回脚本显式产生的返回值。
 // 它会创建执行器、驱动语句求值，并把最终 `return` 结果整理成统一结构返回。
 func executeProgram(ctx context.Context, state *State, program *ir.Program) (*executionResult, error) {
+	return executeProgramWithEnv(ctx, state, program, state.globalEnv)
+}
+
+// executeProgramWithEnv 执行当前 IR 子集程序，并允许调用方指定线程环境表。
+// 顶层执行默认使用 `_G`，`require` 等链路则可以把调用者线程环境继续传下去。
+func executeProgramWithEnv(ctx context.Context, state *State, program *ir.Program, rootEnv *table) (*executionResult, error) {
 	if program == nil {
 		return nil, fmt.Errorf("execute nil IR program")
 	}
@@ -53,7 +77,7 @@ func executeProgram(ctx context.Context, state *State, program *ir.Program) (*ex
 		ctx = context.Background()
 	}
 
-	exec := newExecutor(ctx, state)
+	exec := newExecutorWithEnv(ctx, state, rootEnv)
 
 	for _, statement := range program.Statements {
 		result, done, err := exec.executeStatement(statement)
@@ -76,9 +100,21 @@ func executeProgram(ctx context.Context, state *State, program *ir.Program) (*ex
 // newExecutor 基于当前 State 和上下文创建一份执行器实例。
 // 常规脚本执行和 `require` 触发的 preload loader 都会复用它。
 func newExecutor(ctx context.Context, state *State) *executor {
+	return newExecutorWithEnv(ctx, state, state.globalEnv)
+}
+
+// newExecutorWithEnv 基于当前 State、上下文和线程环境创建一份执行器实例。
+// 这样嵌套 `require` 等链路就能继续沿用调用者线程环境，而不是总掉回根 `_G`。
+func newExecutorWithEnv(ctx context.Context, state *State, rootEnv *table) *executor {
+	if rootEnv == nil {
+		rootEnv = state.globalEnv
+	}
+
 	return &executor{
 		state:          state,
-		scopes:         []map[string]*valueCell{state.globals},
+		envFrames:      []envFrame{{env: rootEnv}},
+		env:            rootEnv,
+		scopes:         []map[string]*valueCell{{}},
 		stepLimit:      state.stepLimit,
 		remainingSteps: state.stepLimit,
 		ctx:            ctx,
@@ -561,6 +597,7 @@ func (e *executor) makeUserFunctionValue(name string, parameters []string, isVar
 			isVararg:   isVararg,
 			body:       append([]ir.Statement(nil), body...),
 			captured:   e.snapshotVisibleCells(),
+			env:        e.env,
 		},
 	}
 }
@@ -808,6 +845,154 @@ func (e *executor) currentScope() map[string]*valueCell {
 	return e.scopes[len(e.scopes)-1]
 }
 
+// currentEnv 返回当前执行帧绑定的最小环境表。
+// 当执行器上还没有显式环境时，会回退到运行时的 `_G`。
+func (e *executor) currentEnv() *table {
+	if len(e.envFrames) > 0 {
+		return e.envFrames[len(e.envFrames)-1].env
+	}
+	if e.env != nil {
+		return e.env
+	}
+	if e.state != nil {
+		return e.state.globalEnv
+	}
+
+	return nil
+}
+
+// threadEnv 返回当前执行线程绑定的最小全局环境表。
+// `getfenv(0)` / `setfenv(0, ...)` 会通过这条路径观察和改写线程级环境。
+func (e *executor) threadEnv() *table {
+	if len(e.envFrames) > 0 {
+		return e.envFrames[0].env
+	}
+
+	return e.currentEnv()
+}
+
+// setThreadEnv 改写当前执行线程绑定的最小全局环境表。
+// 当当前只剩顶层 chunk 一层活动帧时，也会同步刷新当前帧环境。
+func (e *executor) setThreadEnv(env *table) {
+	if len(e.envFrames) == 0 {
+		e.env = env
+		return
+	}
+
+	e.envFrames[0].env = env
+	e.env = e.currentEnv()
+}
+
+// setCurrentEnv 改写当前执行帧绑定的环境表，并同步更新环境栈顶部。
+// `module(...)` 这类会直接切当前 chunk 环境的路径会复用它，保持 `getfenv(1)` 观察一致。
+func (e *executor) setCurrentEnv(env *table) {
+	if len(e.envFrames) == 0 {
+		e.env = env
+		return
+	}
+
+	e.envFrames[len(e.envFrames)-1].env = env
+	e.syncFrameFunctionEnv(len(e.envFrames) - 1)
+	e.env = env
+}
+
+// envByLevel 按最小 `getfenv` / `setfenv` 规则读取当前活跃调用栈上的某一层环境。
+// level=0 和 level=1 都指向当前执行帧；更大的 level 会继续向外层调用者回退。
+func (e *executor) envByLevel(level int) (*table, error) {
+	if level < 0 {
+		return nil, fmt.Errorf("environment level must be non-negative")
+	}
+
+	if len(e.envFrames) == 0 {
+		return e.currentEnv(), nil
+	}
+
+	if level <= 1 {
+		return e.currentEnv(), nil
+	}
+
+	index := len(e.envFrames) - level
+	if index < 0 || index >= len(e.envFrames) {
+		return nil, fmt.Errorf("environment level %d out of range", level)
+	}
+
+	return e.envFrames[index].env, nil
+}
+
+// setEnvByLevel 按最小 `setfenv` 规则改写当前活跃调用栈上的某一层环境。
+// level=0 和 level=1 会改当前执行帧；更大的 level 会改外层调用者环境。
+func (e *executor) setEnvByLevel(level int, env *table) error {
+	if level < 0 {
+		return fmt.Errorf("environment level must be non-negative")
+	}
+
+	if len(e.envFrames) == 0 {
+		e.env = env
+		return nil
+	}
+
+	index := len(e.envFrames) - 1
+	if level > 1 {
+		index = len(e.envFrames) - level
+	}
+
+	if index < 0 || index >= len(e.envFrames) {
+		return fmt.Errorf("environment level %d out of range", level)
+	}
+
+	e.envFrames[index].env = env
+	e.syncFrameFunctionEnv(index)
+	e.env = e.currentEnv()
+	return nil
+}
+
+// syncFrameFunctionEnv 把某个活跃调用帧的环境同步回对应函数对象。
+// 这样栈级 `setfenv(level, env)` 不会只影响当前一次调用，而会持续影响后续调用。
+func (e *executor) syncFrameFunctionEnv(index int) {
+	if index < 0 || index >= len(e.envFrames) {
+		return
+	}
+
+	frame := e.envFrames[index]
+	if frame.userFunction != nil {
+		frame.userFunction.env = frame.env
+	}
+	if frame.nativeFunction != nil {
+		frame.nativeFunction.env = frame.env
+	}
+}
+
+// syncActiveFunctionFrames 把某个函数对象的新环境同步到当前活跃调用栈里对应的帧。
+// 这样 `setfenv(fn, env)` 命中“当前正在执行的函数”时，本次调用后续的全局读写也会立刻看到新环境。
+func (e *executor) syncActiveFunctionFrames(target Value, env *table) {
+	for index := range e.envFrames {
+		frame := &e.envFrames[index]
+		switch functionValue := target.Data.(type) {
+		case *userFunction:
+			if frame.userFunction == functionValue {
+				frame.env = env
+			}
+		case *nativeFunction:
+			if frame.nativeFunction == functionValue {
+				frame.env = env
+			}
+		}
+	}
+
+	e.env = e.currentEnv()
+}
+
+// setFunctionValueEnv 改写函数对象绑定的环境表，并同步当前活跃调用栈里命中的同一函数对象。
+// 这样 `setfenv(fn, env)` 不会只影响未来调用，当前这次调用后半段也会立即沿用新环境。
+func (e *executor) setFunctionValueEnv(value Value, env *table) error {
+	if err := setFunctionEnvironment(value, env); err != nil {
+		return err
+	}
+
+	e.syncActiveFunctionFrames(value, env)
+	return nil
+}
+
 func (e *executor) popScope() {
 	if len(e.scopes) <= 1 {
 		e.scopes[0] = map[string]*valueCell{}
@@ -870,12 +1055,24 @@ func (e *executor) callUserFunction(functionValue *userFunction, arguments []Val
 
 	savedScopes := e.scopes
 	savedVarargs := e.varargs
-	globalScope := savedScopes[0]
 	capturedScope := copyCellMap(functionValue.captured)
-	e.scopes = []map[string]*valueCell{globalScope, capturedScope, {}}
+	frameEnv := functionValue.env
+	if frameEnv == nil && e.state != nil {
+		frameEnv = e.state.globalEnv
+	}
+	e.envFrames = append(e.envFrames, envFrame{
+		env:          frameEnv,
+		userFunction: functionValue,
+	})
+	e.env = frameEnv
+	e.scopes = []map[string]*valueCell{capturedScope, {}}
 	defer func() {
 		e.scopes = savedScopes
 		e.varargs = savedVarargs
+		if len(e.envFrames) > 0 {
+			e.envFrames = e.envFrames[:len(e.envFrames)-1]
+		}
+		e.env = e.currentEnv()
 	}()
 
 	for index, parameter := range functionValue.parameters {
@@ -911,6 +1108,22 @@ func (e *executor) callNativeFunction(functionValue *nativeFunction, arguments [
 	if functionValue == nil || (functionValue.fn == nil && functionValue.contextualImpl == nil) {
 		return nil, fmt.Errorf("call nil native function")
 	}
+
+	frameEnv := functionValue.env
+	if frameEnv == nil && e.state != nil {
+		frameEnv = e.state.globalEnv
+	}
+	e.envFrames = append(e.envFrames, envFrame{
+		env:            frameEnv,
+		nativeFunction: functionValue,
+	})
+	e.env = frameEnv
+	defer func() {
+		if len(e.envFrames) > 0 {
+			e.envFrames = e.envFrames[:len(e.envFrames)-1]
+		}
+		e.env = e.currentEnv()
+	}()
 
 	if functionValue.contextualImpl != nil {
 		return functionValue.contextualImpl(e, arguments)
@@ -970,18 +1183,19 @@ func (e *executor) defineLocal(name string, value Value) {
 func (e *executor) assign(name string, value Value) {
 	for index := len(e.scopes) - 1; index >= 0; index-- {
 		if cell, ok := e.scopes[index][name]; ok {
-			if index == 0 && e.state != nil {
-				e.state.setGlobalValue(name, value)
-				return
-			}
-
 			cell.value = value
 			return
 		}
 	}
 
 	// 未声明名称的普通赋值会回落到全局环境。
-	// 这样函数体里的 `name = value` 不会误写成当前局部作用域临时变量。
+	// 如果当前函数绑定了自定义环境，则会优先写入那份环境表。
+	if e.env != nil {
+		if err := e.writeTableIndex(e.env, Value{Type: ValueTypeString, Data: name}, value); err == nil {
+			return
+		}
+	}
+
 	if e.state != nil {
 		e.state.setGlobalValue(name, value)
 		return
@@ -995,6 +1209,13 @@ func (e *executor) lookup(name string) (Value, bool) {
 		cell, ok := e.scopes[index][name]
 		if ok {
 			return cell.value, true
+		}
+	}
+
+	if e.env != nil {
+		value, err := e.readTableIndex(e.env, Value{Type: ValueTypeString, Data: name})
+		if err == nil && value.Type != ValueTypeNil {
+			return value, true
 		}
 	}
 
